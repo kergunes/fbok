@@ -1,94 +1,71 @@
-# v0.1 manual test checklist
+# v0.1.9 manual test checklist
 
-v0.1 deliberately **does not hide posts**. It only highlights high-confidence Sponsored / Sponsorlu candidates and shows the detection reason.
+v0.1.9 does **not hide posts**. It highlights candidates and records why they matched.
 
 ## Setup
 
-1. Open `chrome://extensions` in Chrome or `brave://extensions` in Brave.
-2. Enable **Developer mode**.
-3. Choose **Load unpacked** and select the repository folder.
-4. Open or refresh `https://www.facebook.com/`.
-5. Scroll the main feed long enough to load both normal and sponsored posts.
+1. `git pull`
+2. Open `brave://extensions` or `chrome://extensions`.
+3. Reload fbok and verify version `0.1.9`.
+4. Hard refresh Facebook.
+5. Scroll until several normal posts and at least one feed ad are visible.
 
-## Expected behavior
+## Visual meaning
 
-A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.8 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
+- **Red solid outline** = high-confidence ad signal.
+- **Orange dashed outline** = medium-confidence unlabeled-ad shape candidate.
+- No outline = no current match.
 
-High-confidence paths:
+The bottom-left badge includes:
 
-- `svg-sprite-ref`
+`fbok 0.1.9 · scanned N · hits N · H/M N/N · cache N · late/rescue N/N · retry N`
+
+Useful counters:
+- `cache`: ephemeral id → text labels retained.
+- `late`: labels completed by a later text node.
+- `rescue`: label text recovered from a removal mutation.
+- `retry`: positively classified signals waiting to be attached to a feed card.
+
+## High-confidence reasons
+
+- `accessibility-sponsored-content`
 - `accessibility-label`
 - `title-label`
 - `aria-labelledby-ref`
-- `visible-text`
-- `visible-text-reconstructed`
-- `visible-short-ad-label`
+- `svg-sprite-ref`
 - `ads-about-link`
+- `visible-text`
 - `own-text-label`
+- `visible-text-reconstructed`
+- `retry-resolved`
 
-Shape-only debug paths:
-- `dangling-label-no-permalink`
-- `outbound-no-permalink`
-- `ad-role-shape`
+## Medium-confidence reasons
 
-Each inspected feed post also receives `data-fbok-seen="true"`. This separates "the detector scanned it and did not match" from "the scanner never reached it."
+- `shape-dangling-label-no-permalink`
+- `shape-outbound-no-permalink`
 
-The content script exposes `window.__fbokDebug` in the extension's isolated DevTools execution context:
-
-- `__fbokDebug.scannedCount()`
-- `__fbokDebug.detectedCount()`
-- `__fbokDebug.detectedPosts()`
-- `__fbokDebug.rescan()`
+Medium candidates are intentionally **not considered verified ads** yet.
 
 ## False-positive checks
 
-These must **not** be highlighted:
+These must not receive a red high-confidence outline:
 
-- A normal post whose body text contains the word "Sponsored".
-- A comment containing "Sponsored" or "Sponsorlu".
-- A normal post linking to an article that contains either word.
-- A normal post whose timestamp is rendered through an SVG sprite.
-- UI outside the main feed.
-- Nested list items inside a post.
-- Posts where a signal cannot be resolved to a top-level feed container.\n- `data-pagelet=\"FeedUnit…\"` fallback'iyle yakalanan feed postları.
+- normal post containing the word “Sponsored” in its body/comment;
+- organic post sharing an external link;
+- group/marketplace/reel cards;
+- story tray;
+- normal page post carrying `data-ad-rendering-role` attributes;
+- sidebar ads (out of scope for feed v0.1).
 
-## Coverage checks
+## Report back
 
-Verify at least:
+For the next pass, record:
 
-- English Facebook UI: `Sponsored`.
-- English Facebook UI variant: short `Ad` label directly under/near the advertiser name.
-- Closed-shadow-root `Ad` label wrapped by a Facebook `/ads/about/` link.
-- Turkish Facebook UI: `Sponsorlu`.
-- Chromium SVG-sprite sponsored labels.
-- Obfuscated / character-split sponsored labels.
-- Infinite scroll after several batches of posts.
-- Posts inserted after SPA navigation without a full refresh.
-- Light and dark Facebook themes.
-- No repeated badges or console errors after long scrolling.
+- visible feed ads;
+- red high-confidence hits;
+- orange medium candidates;
+- missed ads;
+- organic posts receiving any outline;
+- the full bottom-left badge text.
 
-When reporting a false positive or missed ad, capture the relevant post DOM with personal content removed/redacted and note the detector reason if one was shown.
-
-
-## v0.1.7 diagnostic interpretation
-
-The fixed badge now shows:
-
-`fbok 0.1.8 · scanned N · hits N · adlinks N · resolved N · unresolved N`
-
-- `adlinks 0`: the current Ads About signal is not visible to normal DOM queries; inspect the ad label wrapper again.
-- `adlinks > 0, resolved 0`: the signal is visible, but feed-post container resolution is wrong.
-- `resolved > 0, hits 0`: this is a detector state/marking bug.
-- `hits > 0`: the Ads About path is working.
-
-
-## v0.1.8 interpretation
-
-The badge shows high- vs medium-confidence detections. A medium hit is a shape heuristic and must be treated as a candidate, not a verified ad.
-
-For the first validation pass, record:
-- whether each visible feed ad is highlighted;
-- its reason(s);
-- whether any organic post receives a medium or high hit.
-
-Do not enable real hide mode until shape-only false positives are understood.
+If a visible ad is still missed, run `__fbokDebug.diagnostics()` from the extension content-script execution context and capture the result.

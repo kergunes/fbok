@@ -1,45 +1,39 @@
 # Research notes
 
-fbok's detector architecture was reviewed against current public Facebook-specific blockers and filter rules rather than relying only on local trial-and-error.
+fbok's detector architecture is informed by maintained Facebook-specific blockers while being independently implemented.
 
-## Useful current approaches
+Reference implementation reviewed:
+- https://github.com/browseraddonsupport-wq/fb-sponsored-ad-post-blocker
 
-### F.B. Sponsored/Ad Post Blocker
+## Findings adopted in v0.1.9
 
-Source: https://github.com/browseraddonsupport-wq/fb-sponsored-ad-post-blocker
+Current Facebook markup can expose ad labels through several lifecycles:
 
-The project documents several Facebook DOM variants observed in 2026:
+1. Plain or direct text: `Sponsored`, `Sponsorlu`, or `Ad`.
+2. Character-split labels whose visual order is controlled by CSS `order`.
+3. Decoy spans where either the high-class-count or low-class-count partition can contain the real label.
+4. SVG `<use>` references whose target symbol contains accessible text.
+5. `aria-labelledby` references to portal nodes outside the feed post.
+6. Ephemeral label nodes inserted empty, filled later by a text-node mutation, and sometimes removed before the next animation frame.
+7. Positively classified labels staged outside the final post before React reparents them.
 
-- Chromium feed labels rendered through SVG `<use href="#...">` references.
-- `aria-labelledby` targets that may be short-lived or removed after the accessible name is computed.
-- Visible `Ad` labels that can exist without useful persistent text in the post.
-- Ads with no readable label requiring a conservative shape heuristic.
-- `aria-posinset` as a useful feed-post anchor.
-- `data-ad-rendering-role` is explicitly unsafe as a standalone sponsored marker.
+v0.1.9 therefore uses:
+- id → text cache;
+- late text-node capture;
+- removed-text rescue;
+- reverse lookup from cached label id to `aria-labelledby` / SVG referrers;
+- bounded retry only after a signal has already classified as an ad;
+- three-way character reconstruction;
+- semantic post anchors plus a geometry fallback.
 
-fbok reimplements these ideas independently and remains fail-open. The current debug build does not hide posts.
+## Explicit non-signal
 
-### uBlock Origin community filters
+`data-ad-rendering-role`, `data-ad-preview`, and similarly named attributes are not treated as ad evidence. They can appear on ordinary Facebook posts.
 
-Reference: https://www.reddit.com/r/uBlockOrigin/comments/1vdm8jv/facebook_sponsored_posts_hidden_by_custom/
+## Shape heuristics
 
-A current Brave/Chromium filter set combines:
+Some ads can be unlabeled after all readable evidence disappears. fbok keeps a conservative shape fallback in debug mode only:
+- no recognized permalink;
+- dangling `aria-labelledby` and/or outbound link.
 
-- `data-ad-rendering-role="profile_name"`
-- `data-ad-rendering-role="story_message"`
-- `data-ad-rendering-role^="cta-"`
-- feed container anchors such as `aria-posinset`
-
-fbok treats that combination only as a heuristic signal, never the attribute by itself.
-
-## v0.1.8 decision
-
-Detection now has two layers:
-
-1. High-confidence label/accessibility/SVG signals.
-2. Conservative unlabeled-ad shape signals, currently used only for debug highlighting:
-   - dangling `aria-labelledby` with no post permalink;
-   - outbound link with no post permalink;
-   - the combined ad-rendering-role shape above.
-
-Before real hide mode, these shape detections must be manually measured for false positives.
+These produce **medium confidence** and must be false-positive tested before any hide mode uses them.

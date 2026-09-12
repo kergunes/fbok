@@ -1,20 +1,27 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.8";
+  const VERSION = "0.1.9";
+
   const CONFIG = Object.freeze({
     debug: true,
+    labelCacheLimit: 256,
     maxCandidatesPerPost: 420,
-    metadataMaxPixelsFromTop: 260,
-    metadataMaxFractionOfPost: 0.4,
-    labelCacheLimit: 200,
+    retryIntervalMs: 100,
+    retryWindowMs: 5000,
+    maxPendingSignals: 64,
+    shapeSweepIntervalMs: 800,
+    metadataMaxPixelsFromTop: 280,
+    metadataMaxFractionOfPost: 0.42,
   });
 
   const SPONSORED_LABELS = new Set(["sponsored", "sponsorlu", "ad"]);
+
   const POST_SELECTOR =
     '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"], article';
+
   const LABEL_SELECTOR =
-    'span, a, use, text, [aria-label], [aria-labelledby], [role="button"]';
+    'span, a, use, text, [aria-label], [aria-labelledby], [title]';
 
   const DETECTED_ATTR = "data-fbok-detected";
   const REASON_ATTR = "data-fbok-reason";
@@ -22,12 +29,18 @@
   const SEEN_ATTR = "data-fbok-seen";
 
   const INVISIBLE_CHARS_RE = /[\p{Cf}\p{Mn}\p{Co}]/gu;
+  const HONEYPOT_CLASS_COUNT = 10;
+
   const PERMALINK_RE =
     /\/(posts|permalink|permalink\.php|story\.php|videos|video\.php|watch|photo|photo\.php|photos|reel|reels|groups|events|notes|share|media\/set|commerce\/listing|marketplace\/item)([\/?]|$)/i;
 
-  const pendingPosts = new Set();
   const labelTextById = new Map();
+  const pendingPosts = new Set();
+  const pendingSignals = new Map();
+
   let flushScheduled = false;
+  let retryTimer = null;
+  let lastShapeSweep = 0;
 
   const debugState = {
     scanned: 0,
@@ -35,10 +48,16 @@
     highHits: 0,
     mediumHits: 0,
     cachedLabels: 0,
-    danglingCandidates: 0,
-    outboundCandidates: 0,
-    roleShapeCandidates: 0,
-    labelElementsScanned: 0,
+    lateTextLabels: 0,
+    rescuedLabels: 0,
+    referrerResolutions: 0,
+    retryQueued: 0,
+    retryResolved: 0,
+    retryExpired: 0,
+    svgMatches: 0,
+    ariaMatches: 0,
+    textMatches: 0,
+    shapeCandidates: 0,
   };
 
   function cleanText(value) {
@@ -60,11 +79,13 @@
 
   function ownText(element) {
     let out = "";
+
     for (const node of element.childNodes) {
       if (node.nodeType !== Node.TEXT_NODE) continue;
       out += node.textContent ?? "";
       if (out.length > 300) return "";
     }
+
     return cleanText(out);
   }
 
@@ -85,37 +106,34 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  function isTopLevelPositionedItem(post) {
-    if (!post.hasAttribute("aria-posinset")) return false;
-
-    const position = Number.parseInt(post.getAttribute("aria-posinset") ?? "", 10);
-    if (!Number.isFinite(position) || position < 1) return false;
-
-    const positionedAncestor = post.parentElement?.closest("[aria-posinset]");
-    if (positionedAncestor) return false;
-
-    if (!post.closest('[role="main"]')) return false;
-    if (
-      post.closest(
-        '[role="dialog"], [role="navigation"], [role="complementary"]',
-      )
-    ) {
-      return false;
-    }
-
-    return true;
-  }
-
   function isPageletFeedUnit(post) {
     if (!post.matches('[data-pagelet^="FeedUnit"]')) return false;
     if (!post.closest('[role="main"]')) return false;
     return !post.closest('[role="dialog"], [role="complementary"]');
   }
 
+  function isTopLevelPositionedItem(post) {
+    if (!post.hasAttribute("aria-posinset")) return false;
+
+    const position = Number.parseInt(
+      post.getAttribute("aria-posinset") ?? "",
+      10,
+    );
+
+    if (!Number.isFinite(position) || position < 1) return false;
+    if (post.parentElement?.closest("[aria-posinset]")) return false;
+    if (!post.closest('[role="main"]')) return false;
+
+    return !post.closest(
+      '[role="dialog"], [role="navigation"], [role="complementary"]',
+    );
+  }
+
   function isLegacyFeedArticle(post) {
     if (!(post.matches('[role="article"]') || post.matches("article"))) {
       return false;
     }
+
     return Boolean(post.closest('[role="feed"], [role="main"]'));
   }
 
@@ -129,16 +147,85 @@
     );
   }
 
+  function holdsSeveralCards(element) {
+    let cards = 0;
+
+    for (const child of element.children) {
+      const rect = child.getBoundingClientRect();
+
+      if (
+        rect.width >= 360 &&
+        rect.width <= 900 &&
+        rect.height >= 120 &&
+        rect.height <= 3200
+      ) {
+        cards += 1;
+        if (cards > 1) return true;
+      }
+    }
+
+    return false;
+  }
+
+  function looksLikePost(card) {
+    if (!(card instanceof Element)) return false;
+
+    const text = cleanText(card.textContent);
+    if (text.length < 40) return false;
+
+    let storyLinks = 0;
+    for (const link of card.querySelectorAll('a[href*="/stories/"]')) {
+      storyLinks += 1;
+      if (storyLinks > 1) return false;
+    }
+
+    return true;
+  }
+
+  function geometryCardFromSignal(signal) {
+    if (!(signal instanceof Element)) return null;
+
+    let node = signal;
+    let best = null;
+
+    for (let depth = 0; node && depth < 30; depth += 1) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.body) break;
+
+      const rect = node.getBoundingClientRect();
+
+      if (
+        node.closest('[role="main"]') &&
+        rect.width >= 360 &&
+        rect.width <= Math.min(900, window.innerWidth * 0.8) &&
+        rect.height >= 120 &&
+        rect.height <= 3200 &&
+        looksLikePost(node)
+      ) {
+        best = node;
+
+        const parentRect = parent.getBoundingClientRect();
+        if (parentRect.width > rect.width * 1.25) break;
+        if (holdsSeveralCards(parent)) break;
+      }
+
+      node = parent;
+    }
+
+    return best;
+  }
+
   function resolvePostContainer(node) {
     if (!(node instanceof Element)) return null;
 
     let candidate = node.closest(POST_SELECTOR);
+
     while (candidate) {
       if (isFeedPost(candidate)) return candidate;
       candidate = candidate.parentElement?.closest(POST_SELECTOR) ?? null;
     }
 
-    return null;
+    return geometryCardFromSignal(node);
   }
 
   function isLikelyMetadataNode(node, post) {
@@ -146,73 +233,110 @@
 
     const nodeRect = node.getBoundingClientRect();
     const postRect = post.getBoundingClientRect();
+
     if (postRect.width <= 0 || postRect.height <= 0) return false;
 
     const offsetFromTop = nodeRect.top - postRect.top;
     const maxOffset = Math.min(
       CONFIG.metadataMaxPixelsFromTop,
-      Math.max(130, postRect.height * CONFIG.metadataMaxFractionOfPost),
+      Math.max(140, postRect.height * CONFIG.metadataMaxFractionOfPost),
     );
 
-    return offsetFromTop >= -8 && offsetFromTop <= maxOffset;
+    return offsetFromTop >= -12 && offsetFromTop <= maxOffset;
   }
 
-  function rememberLabelText(id, rawText) {
-    if (!id) return;
+  function updateDebugBadge() {
+    if (!CONFIG.debug) return;
+
+    let badge = document.getElementById("fbok-debug-badge");
+
+    if (!badge) {
+      badge = document.createElement("div");
+      badge.id = "fbok-debug-badge";
+      document.documentElement.appendChild(badge);
+    }
+
+    const scanned = document.querySelectorAll(
+      `[${SEEN_ATTR}="true"]`,
+    ).length;
+
+    const detected = document.querySelectorAll(
+      `[${DETECTED_ATTR}="true"]`,
+    ).length;
+
+    debugState.scanned = scanned;
+    debugState.hits = detected;
+    debugState.cachedLabels = labelTextById.size;
+
+    badge.textContent =
+      `fbok ${VERSION} · scanned ${scanned} · hits ${detected}` +
+      ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
+      ` · cache ${labelTextById.size}` +
+      ` · late/rescue ${debugState.lateTextLabels}/${debugState.rescuedLabels}` +
+      ` · retry ${pendingSignals.size}`;
+  }
+
+  function markDetected(post, detection) {
+    if (!(post instanceof Element)) return;
+
+    const wasDetected = post.getAttribute(DETECTED_ATTR) === "true";
+
+    post.setAttribute(DETECTED_ATTR, "true");
+    post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
+    post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
+
+    if (!wasDetected) {
+      if (detection.confidence === "high") {
+        debugState.highHits += 1;
+      } else {
+        debugState.mediumHits += 1;
+      }
+    }
+
+    if (CONFIG.debug) {
+      console.debug("[fbok] Sponsored candidate", {
+        reasons: detection.reasons,
+        confidence: detection.confidence,
+        post,
+      });
+    }
+
+    updateDebugBadge();
+  }
+
+  function cacheLabelText(id, rawText, source = null) {
+    if (!id) return false;
 
     const text = cleanText(rawText);
-    if (!text || text.length > 40) return;
+    if (!text || text.length > 40) return false;
 
     if (!labelTextById.has(id) && labelTextById.size >= CONFIG.labelCacheLimit) {
       labelTextById.delete(labelTextById.keys().next().value);
     }
 
     labelTextById.set(id, text);
-    debugState.cachedLabels = labelTextById.size;
 
     if (isSponsoredLabel(text)) {
-      resolveCachedLabelReferrer(id);
-    }
-  }
-
-  function cacheLabelTargets(node) {
-    if (!(node instanceof Element)) return;
-
-    if (node.id) rememberLabelText(node.id, node.textContent);
-
-    for (const element of node.querySelectorAll("[id]")) {
-      rememberLabelText(element.id, element.textContent);
-    }
-  }
-
-  function referencedLabelText(node) {
-    const ids = (node.getAttribute("aria-labelledby") ?? "")
-      .split(/\s+/)
-      .filter(Boolean);
-
-    const values = [];
-
-    for (const id of ids) {
-      const target = document.getElementById(id);
-      const text = target ? cleanText(target.textContent) : labelTextById.get(id);
-      if (text) values.push(text);
+      resolveReferrersForId(id, source);
     }
 
-    return values;
+    updateDebugBadge();
+    return true;
   }
 
-  function resolveCachedLabelReferrer(id) {
-    if (!id || typeof CSS === "undefined" || !CSS.escape) return;
+  function rememberLabelTarget(element) {
+    if (!(element instanceof Element) || !element.id) return false;
+    return cacheLabelText(element.id, element.textContent, element);
+  }
 
-    const escaped = CSS.escape(id);
-    const referrer =
-      document.querySelector(`[aria-labelledby~="${escaped}"]`) ||
-      document.querySelector(`use[*|href="#${escaped}"]`);
+  function cacheLabelTargets(root) {
+    if (!(root instanceof Element)) return;
 
-    if (!referrer) return;
+    if (root.id) rememberLabelTarget(root);
 
-    const post = resolvePostContainer(referrer);
-    if (post) enqueuePost(post);
+    for (const element of root.querySelectorAll("[id]")) {
+      rememberLabelTarget(element);
+    }
   }
 
   function svgReference(useElement) {
@@ -224,55 +348,95 @@
     );
   }
 
-  function classifyStructuredLabel(node, post) {
-    if (!(node instanceof Element)) return null;
+  function referencedLabelText(node) {
+    const ids = (node.getAttribute("aria-labelledby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean);
 
-    const ariaLabel = node.getAttribute("aria-label");
-    if (ariaLabel && /sponsored content$/i.test(cleanText(ariaLabel))) {
-      return { reason: "accessibility-sponsored-content", confidence: "high" };
+    const values = [];
+
+    for (const id of ids) {
+      const target = document.getElementById(id);
+      const text = target
+        ? cleanText(target.textContent)
+        : labelTextById.get(id);
+
+      if (text) values.push(text);
     }
 
-    if (ariaLabel && isSponsoredLabel(ariaLabel) && isLikelyMetadataNode(node, post)) {
-      return { reason: "accessibility-label", confidence: "high" };
+    return values;
+  }
+
+  function referrersForId(id) {
+    if (!id) return [];
+
+    const found = [];
+    const escaped = CSS.escape(id);
+
+    try {
+      for (const node of document.querySelectorAll(
+        `[aria-labelledby~="${escaped}"]`,
+      )) {
+        found.push(node);
+      }
+    } catch {
+      // Ignore malformed transient ids and fall back to the explicit scan below.
     }
 
-    const title = node.getAttribute("title");
-    if (title && isSponsoredLabel(title) && isLikelyMetadataNode(node, post)) {
-      return { reason: "title-label", confidence: "high" };
+    for (const useElement of document.querySelectorAll("use")) {
+      if (svgReference(useElement) === `#${id}`) {
+        found.push(useElement);
+      }
     }
 
-    if (node.tagName.toLowerCase() === "use") {
-      const ref = svgReference(node);
-      if (ref.startsWith("#") && ref.length > 1) {
-        const id = ref.slice(1);
-        const target = document.getElementById(id);
-        const text = target ? cleanText(target.textContent) : labelTextById.get(id);
+    return [...new Set(found)];
+  }
 
-        if (text && isSponsoredLabel(text)) {
-          return { reason: "svg-sprite-ref", confidence: "high" };
+  function resolveReferrersForId(id, source = null) {
+    let resolved = false;
+
+    for (const referrer of referrersForId(id)) {
+      if (referrer === source) continue;
+
+      const hit = classifyStructuredSignal(referrer);
+
+      if (hit) {
+        const post = resolvePostContainer(referrer);
+
+        if (post) {
+          markDetected(post, {
+            confidence: "high",
+            reasons: [hit.reason],
+            nodes: [referrer],
+          });
+          resolved = true;
+          debugState.referrerResolutions += 1;
+          continue;
         }
+
+        queuePositiveSignal(referrer, hit);
+      } else {
+        enqueuePost(resolvePostContainer(referrer));
       }
     }
 
-    const labelledByValues = referencedLabelText(node);
-    if (
-      labelledByValues.some(isSponsoredLabel) &&
-      isLikelyMetadataNode(node, post)
-    ) {
-      return { reason: "aria-labelledby-ref", confidence: "high" };
-    }
+    return resolved;
+  }
 
-    if (node.tagName.toLowerCase() === "a") {
-      const href = (node.getAttribute("href") ?? "").toLocaleLowerCase();
-      if (
-        href.includes("/ads/about") ||
-        href.includes("why_am_i_seeing_this_ad")
-      ) {
-        return { reason: "ads-about-link", confidence: "high" };
+  function isCharacterSplit(element) {
+    const children = element.children;
+
+    if (children.length < 4 || children.length > 120) return false;
+
+    for (const child of children) {
+      if (child.tagName !== "SPAN" || child.children.length !== 0) {
+        return false;
       }
+
+      if (cleanText(child.textContent).length > 1) return false;
     }
 
-    return null;
+    return true;
   }
 
   function collectOrderedLeaves(root, depth = 0) {
@@ -284,8 +448,10 @@
 
       if (child instanceof Element) {
         const style = getComputedStyle(child);
-        const parsed = Number.parseInt(style.order, 10);
-        if (Number.isFinite(parsed)) order = parsed;
+        const parsedOrder = Number.parseInt(style.order, 10);
+
+        if (Number.isFinite(parsedOrder)) order = parsedOrder;
+
         hidden =
           style.display === "none" ||
           style.visibility === "hidden" ||
@@ -303,8 +469,12 @@
       if (entry.hidden) continue;
 
       const child = entry.child;
+
       if (child.nodeType === Node.TEXT_NODE) {
-        leaves.push({ text: child.textContent ?? "", classCount: null });
+        leaves.push({
+          text: child.textContent ?? "",
+          classCount: null,
+        });
         continue;
       }
 
@@ -323,31 +493,18 @@
     return leaves;
   }
 
-  function characterSplitVariants(root) {
-    const children = root.children;
-    if (children.length < 4 || children.length > 120) return [];
+  function characterSplitVariants(element) {
+    if (!isCharacterSplit(element)) return [];
 
-    let leafish = 0;
-    for (const child of children) {
-      if (
-        child.tagName === "SPAN" &&
-        child.children.length === 0 &&
-        cleanText(child.textContent).length <= 1
-      ) {
-        leafish += 1;
-      }
-    }
-
-    if (leafish < Math.ceil(children.length * 0.65)) return [];
-
-    const leaves = collectOrderedLeaves(root);
+    const leaves = collectOrderedLeaves(element);
     if (leaves.length === 0) return [];
 
     const assemble = (keep) =>
       cleanText(
         leaves
           .filter(
-            (leaf) => leaf.classCount === null || keep(leaf.classCount),
+            (leaf) =>
+              leaf.classCount === null || keep(leaf.classCount),
           )
           .map((leaf) => leaf.text)
           .join(""),
@@ -355,35 +512,213 @@
 
     return [
       assemble(() => true),
-      assemble((count) => count > 10),
-      assemble((count) => count <= 10),
+      assemble((count) => count > HONEYPOT_CLASS_COUNT),
+      assemble((count) => count <= HONEYPOT_CLASS_COUNT),
     ].filter(Boolean);
   }
 
-  function classifyTextLabel(node, post) {
-    if (!(node instanceof Element) || !isLikelyMetadataNode(node, post)) {
-      return null;
+  function isAdsAboutHref(value) {
+    const href = String(value ?? "").toLocaleLowerCase();
+
+    return (
+      href.includes("/ads/about") ||
+      href.includes("why_am_i_seeing_this_ad")
+    );
+  }
+
+  function classifyStructuredSignal(node) {
+    if (!(node instanceof Element)) return null;
+
+    const ariaLabel = node.getAttribute("aria-label");
+
+    if (ariaLabel) {
+      const cleaned = cleanText(ariaLabel);
+
+      if (/sponsored content$/i.test(cleaned) || isSponsoredLabel(cleaned)) {
+        debugState.ariaMatches += 1;
+        return {
+          reason: /sponsored content$/i.test(cleaned)
+            ? "accessibility-sponsored-content"
+            : "accessibility-label",
+          confidence: "high",
+        };
+      }
     }
+
+    const title = node.getAttribute("title");
+
+    if (title && isSponsoredLabel(title)) {
+      debugState.ariaMatches += 1;
+      return { reason: "title-label", confidence: "high" };
+    }
+
+    if (node.tagName.toLowerCase() === "use") {
+      const ref = svgReference(node);
+
+      if (ref.startsWith("#") && ref.length > 1) {
+        const id = ref.slice(1);
+        const target = document.getElementById(id);
+
+        const text = target
+          ? cleanText(target.textContent)
+          : labelTextById.get(id);
+
+        if (text && isSponsoredLabel(text)) {
+          debugState.svgMatches += 1;
+          return { reason: "svg-sprite-ref", confidence: "high" };
+        }
+      }
+    }
+
+    if (referencedLabelText(node).some(isSponsoredLabel)) {
+      debugState.ariaMatches += 1;
+      return { reason: "aria-labelledby-ref", confidence: "high" };
+    }
+
+    if (node.tagName.toLowerCase() === "a") {
+      const rawHref = node.getAttribute("href") ?? "";
+
+      if (isAdsAboutHref(rawHref) || isAdsAboutHref(node.href)) {
+        return { reason: "ads-about-link", confidence: "high" };
+      }
+    }
+
+    return null;
+  }
+
+  function classifyTextSignal(node, post = null) {
+    if (!(node instanceof Element)) return null;
+
+    if (post && !isLikelyMetadataNode(node, post)) return null;
 
     if (node.children.length === 0) {
       const text = cleanText(node.textContent);
+
       if (text.length <= 40 && isSponsoredLabel(text)) {
+        debugState.textMatches += 1;
         return { reason: "visible-text", confidence: "high" };
       }
     }
 
     const direct = ownText(node);
+
     if (direct && direct.length <= 40 && isSponsoredLabel(direct)) {
+      debugState.textMatches += 1;
       return { reason: "own-text-label", confidence: "high" };
     }
 
     for (const variant of characterSplitVariants(node)) {
       if (isSponsoredLabel(variant)) {
-        return { reason: "visible-text-reconstructed", confidence: "high" };
+        debugState.textMatches += 1;
+        return {
+          reason: "visible-text-reconstructed",
+          confidence: "high",
+        };
       }
     }
 
     return null;
+  }
+
+  function classifySignal(node, post = null) {
+    return (
+      classifyStructuredSignal(node) ||
+      classifyTextSignal(node, post)
+    );
+  }
+
+  function processSignalElement(node) {
+    if (!(node instanceof Element)) return false;
+
+    const post = resolvePostContainer(node);
+    const hit = classifySignal(node, post);
+
+    if (!hit) return false;
+
+    if (post) {
+      markDetected(post, {
+        confidence: hit.confidence,
+        reasons: [hit.reason],
+        nodes: [node],
+      });
+      return true;
+    }
+
+    if (node.id && resolveReferrersForId(node.id, node)) {
+      return true;
+    }
+
+    queuePositiveSignal(node, hit);
+    return false;
+  }
+
+  function scanLabelRoot(root) {
+    if (!(root instanceof Element)) return;
+
+    if (root.matches(LABEL_SELECTOR)) {
+      processSignalElement(root);
+    }
+
+    for (const node of root.querySelectorAll(LABEL_SELECTOR)) {
+      processSignalElement(node);
+    }
+  }
+
+  function queuePositiveSignal(node, hit) {
+    if (!(node instanceof Element)) return;
+    if (pendingSignals.has(node)) return;
+    if (pendingSignals.size >= CONFIG.maxPendingSignals) return;
+
+    pendingSignals.set(node, {
+      firstSeen: performance.now(),
+      hit,
+    });
+
+    debugState.retryQueued += 1;
+    ensureRetryLoop();
+    updateDebugBadge();
+  }
+
+  function ensureRetryLoop() {
+    if (retryTimer !== null) return;
+
+    retryTimer = window.setInterval(() => {
+      const now = performance.now();
+
+      for (const [node, entry] of pendingSignals) {
+        if (now - entry.firstSeen > CONFIG.retryWindowMs) {
+          pendingSignals.delete(node);
+          debugState.retryExpired += 1;
+          continue;
+        }
+
+        const post = resolvePostContainer(node);
+
+        if (post) {
+          markDetected(post, {
+            confidence: entry.hit.confidence,
+            reasons: [entry.hit.reason, "retry-resolved"],
+            nodes: [node],
+          });
+
+          pendingSignals.delete(node);
+          debugState.retryResolved += 1;
+          continue;
+        }
+
+        if (node.id && resolveReferrersForId(node.id, node)) {
+          pendingSignals.delete(node);
+          debugState.retryResolved += 1;
+        }
+      }
+
+      if (pendingSignals.size === 0) {
+        clearInterval(retryTimer);
+        retryTimer = null;
+      }
+
+      updateDebugBadge();
+    }, CONFIG.retryIntervalMs);
   }
 
   function candidateElements(post) {
@@ -393,23 +728,24 @@
     );
   }
 
-  function detectLabelSignals(post) {
+  function detectHighConfidenceSignals(post) {
     const hits = [];
 
     for (const node of candidateElements(post)) {
-      debugState.labelElementsScanned += 1;
+      const hit = classifySignal(node, post);
 
-      const structured = classifyStructuredLabel(node, post);
-      if (structured) {
-        hits.push({ ...structured, node });
-        continue;
+      if (hit) {
+        hits.push({ ...hit, node });
       }
-
-      const text = classifyTextLabel(node, post);
-      if (text) hits.push({ ...text, node });
     }
 
-    return hits;
+    if (hits.length === 0) return null;
+
+    return {
+      confidence: "high",
+      reasons: [...new Set(hits.map((hit) => hit.reason))],
+      nodes: hits.map((hit) => hit.node),
+    };
   }
 
   function linkPath(link) {
@@ -419,7 +755,9 @@
     try {
       return new URL(href, location.origin).pathname;
     } catch {
-      return href.replace(/^[a-z]+:\/\/[^/]*/i, "").split(/[?#]/)[0] || "/";
+      return href
+        .replace(/^[a-z]+:\/\/[^/]*/i, "")
+        .split(/[?#]/)[0] || "/";
     }
   }
 
@@ -427,6 +765,7 @@
     for (const link of post.querySelectorAll("a[href]")) {
       if (PERMALINK_RE.test(linkPath(link))) return true;
     }
+
     return false;
   }
 
@@ -438,7 +777,9 @@
 
     try {
       const url = new URL(href, location.origin);
-      return !/(^|\.)facebook\.com$/i.test(url.hostname);
+      return !/(^|\.)(facebook\.com|fb\.com|fbcdn\.net)$/i.test(
+        url.hostname,
+      );
     } catch {
       return false;
     }
@@ -456,8 +797,9 @@
 
       for (const id of ids) {
         const target = document.getElementById(id);
-        const cached = labelTextById.get(id);
-        const text = target ? cleanText(target.textContent) : cached;
+        const text = target
+          ? cleanText(target.textContent)
+          : labelTextById.get(id);
 
         if (!text) return true;
       }
@@ -466,115 +808,27 @@
     return false;
   }
 
-  function hasAdRoleShape(post) {
-    return Boolean(
-      post.querySelector('[data-ad-rendering-role="profile_name"]') &&
-        post.querySelector('[data-ad-rendering-role="story_message"]') &&
-        post.querySelector('[data-ad-rendering-role^="cta-"]'),
-    );
-  }
-
-  function looksLikePost(post) {
-    const text = cleanText(post.textContent);
-    if (text.length < 40) return false;
-
-    let storyLinks = 0;
-    for (const link of post.querySelectorAll('a[href*="/stories/"]')) {
-      storyLinks += 1;
-      if (storyLinks > 1) return false;
-    }
-
-    return true;
-  }
-
-  function detectUnlabeledShape(post) {
+  function detectShapeCandidate(post) {
     if (!looksLikePost(post)) return null;
     if (hasPermalink(post)) return null;
 
     const dangling = hasDanglingLabelReference(post);
     const outbound = hasOutboundLink(post);
-    const roleShape = hasAdRoleShape(post);
 
-    if (dangling) debugState.danglingCandidates += 1;
-    if (outbound) debugState.outboundCandidates += 1;
-    if (roleShape) debugState.roleShapeCandidates += 1;
+    if (!dangling && !outbound) return null;
 
-    if (!dangling && !outbound && !roleShape) return null;
+    debugState.shapeCandidates += 1;
 
     const reasons = [];
-    if (dangling) reasons.push("dangling-label-no-permalink");
-    if (outbound) reasons.push("outbound-no-permalink");
-    if (roleShape) reasons.push("ad-role-shape");
+
+    if (dangling) reasons.push("shape-dangling-label-no-permalink");
+    if (outbound) reasons.push("shape-outbound-no-permalink");
 
     return {
+      confidence: "medium",
       reasons,
-      confidence:
-        (dangling && outbound) || (outbound && roleShape) ? "high" : "medium",
       nodes: [post],
     };
-  }
-
-  function detectSponsored(post) {
-    if (!isFeedPost(post)) return null;
-
-    const labelHits = detectLabelSignals(post);
-
-    if (labelHits.length > 0) {
-      return {
-        confidence: "high",
-        reasons: [...new Set(labelHits.map((hit) => hit.reason))],
-        nodes: labelHits.map((hit) => hit.node),
-      };
-    }
-
-    return detectUnlabeledShape(post);
-  }
-
-  function updateDebugBadge() {
-    if (!CONFIG.debug) return;
-
-    let badge = document.getElementById("fbok-debug-badge");
-    if (!badge) {
-      badge = document.createElement("div");
-      badge.id = "fbok-debug-badge";
-      document.documentElement.appendChild(badge);
-    }
-
-    const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
-    const detected = document.querySelectorAll(
-      `[${DETECTED_ATTR}="true"]`,
-    ).length;
-
-    debugState.scanned = scanned;
-    debugState.hits = detected;
-
-    badge.textContent =
-      `fbok ${VERSION} · scanned ${scanned} · hits ${detected}` +
-      ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
-      ` · cache ${debugState.cachedLabels}`;
-  }
-
-  function markDetected(post, detection) {
-    const wasDetected = post.getAttribute(DETECTED_ATTR) === "true";
-
-    post.setAttribute(DETECTED_ATTR, "true");
-    post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
-    post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
-
-    if (!wasDetected) {
-      if (detection.confidence === "high") debugState.highHits += 1;
-      else debugState.mediumHits += 1;
-    }
-
-    if (CONFIG.debug) {
-      console.debug("[fbok] Sponsored post candidate", {
-        reasons: detection.reasons,
-        confidence: detection.confidence,
-        post,
-      });
-    }
-
-    updateDebugBadge();
   }
 
   function inspectPost(post) {
@@ -582,8 +836,19 @@
 
     post.setAttribute(SEEN_ATTR, "true");
 
-    const detection = detectSponsored(post);
-    if (detection) markDetected(post, detection);
+    const high = detectHighConfidenceSignals(post);
+
+    if (high) {
+      markDetected(post, high);
+      updateDebugBadge();
+      return;
+    }
+
+    const shape = detectShapeCandidate(post);
+
+    if (shape) {
+      markDetected(post, shape);
+    }
 
     updateDebugBadge();
   }
@@ -592,17 +857,19 @@
     if (!post || !isFeedPost(post)) return;
 
     pendingPosts.add(post);
+
     if (flushScheduled) return;
 
     flushScheduled = true;
+
     requestAnimationFrame(() => {
       flushScheduled = false;
 
       const posts = Array.from(pendingPosts);
       pendingPosts.clear();
 
-      for (const pendingPost of posts) {
-        if (pendingPost.isConnected) inspectPost(pendingPost);
+      for (const post of posts) {
+        if (post.isConnected) inspectPost(post);
       }
     });
   }
@@ -628,29 +895,118 @@
     }
   }
 
+  function sweepShapeCandidates(force = false) {
+    const now = performance.now();
+
+    if (!force && now - lastShapeSweep < CONFIG.shapeSweepIntervalMs) {
+      return;
+    }
+
+    lastShapeSweep = now;
+
+    for (const post of document.querySelectorAll(POST_SELECTOR)) {
+      if (!isFeedPost(post)) continue;
+      if (post.getAttribute(DETECTED_ATTR) === "true") continue;
+
+      const shape = detectShapeCandidate(post);
+      if (shape) markDetected(post, shape);
+    }
+  }
+
+  function handleRemovedNode(node, mutationTarget) {
+    if (node instanceof Element) {
+      cacheLabelTargets(node);
+      return;
+    }
+
+    if (node.nodeType !== Node.TEXT_NODE) return;
+    if (!(mutationTarget instanceof Element)) return;
+    if (!mutationTarget.id) return;
+
+    if (
+      cacheLabelText(
+        mutationTarget.id,
+        node.textContent,
+        mutationTarget,
+      )
+    ) {
+      debugState.rescuedLabels += 1;
+    }
+  }
+
+  function handleAddedNode(node, mutationTarget) {
+    if (node instanceof Element) {
+      cacheLabelTargets(node);
+      scanLabelRoot(node);
+      enqueueFromNode(node);
+      return;
+    }
+
+    if (node.nodeType !== Node.TEXT_NODE) return;
+
+    const parent =
+      node.parentElement ||
+      (mutationTarget instanceof Element ? mutationTarget : null);
+
+    if (!parent) return;
+
+    if (parent.id) {
+      if (cacheLabelText(parent.id, parent.textContent, parent)) {
+        debugState.lateTextLabels += 1;
+      }
+    }
+
+    processSignalElement(parent);
+
+    const post = resolvePostContainer(parent);
+    if (post) enqueuePost(post);
+  }
+
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
-      for (const removedNode of mutation.removedNodes) {
-        if (removedNode instanceof Element) cacheLabelTargets(removedNode);
+      if (mutation.type === "characterData") {
+        const textNode = mutation.target;
+        const parent = textNode.parentElement;
+
+        if (parent) {
+          if (parent.id) {
+            if (cacheLabelText(parent.id, parent.textContent, parent)) {
+              debugState.lateTextLabels += 1;
+            }
+          }
+
+          processSignalElement(parent);
+
+          const post = resolvePostContainer(parent);
+          if (post) enqueuePost(post);
+        }
+
+        continue;
       }
 
-      for (const addedNode of mutation.addedNodes) {
-        if (addedNode instanceof Element) {
-          cacheLabelTargets(addedNode);
-          enqueueFromNode(addedNode);
-        }
+      for (const node of mutation.removedNodes) {
+        handleRemovedNode(node, mutation.target);
+      }
+
+      for (const node of mutation.addedNodes) {
+        handleAddedNode(node, mutation.target);
       }
 
       if (mutation.target instanceof Element) {
-        const changedPost = resolvePostContainer(mutation.target);
-        if (changedPost) enqueuePost(changedPost);
+        const post = resolvePostContainer(mutation.target);
+        if (post) enqueuePost(post);
       }
     }
+
+    sweepShapeCandidates();
+    updateDebugBadge();
   });
 
   function start() {
     cacheLabelTargets(document.documentElement);
+    scanLabelRoot(document.documentElement);
     scanExistingFeed();
+    sweepShapeCandidates(true);
 
     observer.observe(document.documentElement, {
       childList: true,
@@ -660,9 +1016,15 @@
 
     window.__fbokDebug = Object.freeze({
       version: VERSION,
-      rescan: scanExistingFeed,
+      rescan() {
+        scanLabelRoot(document.documentElement);
+        scanExistingFeed();
+        sweepShapeCandidates(true);
+      },
       scannedCount() {
-        return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
+        return document.querySelectorAll(
+          `[${SEEN_ATTR}="true"]`,
+        ).length;
       },
       detectedCount() {
         return document.querySelectorAll(
@@ -671,7 +1033,9 @@
       },
       detectedPosts() {
         return Array.from(
-          document.querySelectorAll(`[${DETECTED_ATTR}="true"]`),
+          document.querySelectorAll(
+            `[${DETECTED_ATTR}="true"]`,
+          ),
         ).map((post) => ({
           reason: post.getAttribute(REASON_ATTR),
           confidence: post.getAttribute(CONFIDENCE_ATTR),
@@ -682,12 +1046,15 @@
         return {
           ...debugState,
           cachedLabels: labelTextById.size,
+          pendingSignals: pendingSignals.size,
         };
       },
     });
 
     if (CONFIG.debug) {
-      console.debug(`[fbok] v${VERSION} research-aligned detector active`);
+      console.debug(
+        `[fbok] v${VERSION} lifecycle-aware detector active`,
+      );
     }
 
     updateDebugBadge();

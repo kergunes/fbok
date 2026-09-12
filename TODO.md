@@ -6,7 +6,7 @@
 - [x] Manifest V3 skeleton
 - [x] Facebook-only content script
 - [x] MutationObserver for dynamic/infinite feed
-- [x] Multiple independent Sponsored/Sponsorlu detectors
+- [x] Multiple independent Sponsored/Sponsorlu/Ad detectors
 - [x] Accessibility/ARIA detection
 - [x] SVG sprite reference detection
 - [x] Obfuscated/character-split text reconstruction
@@ -15,14 +15,11 @@
 - [x] Fail-open behavior
 - [x] Manual test checklist
 - [x] GitHub Actions validation
+- [x] Ephemeral label cache + reverse referrer resolution
+- [x] Late text-node and removed-text rescue
+- [x] Bounded retry queue for positively classified unresolved signals
+- [x] Remove data-ad-rendering-role as a detection signal
 - [ ] Real Facebook feed validation in Chrome/Brave
-  - [x] First real-world miss captured: Logitech feed ad labeled `Ad`
-  - [x] Added strict visible `Ad` header detection in v0.1.3
-  - [x] Relaxed brittle heading dependency and added debug badge in v0.1.4
-  - [x] Live DOM inspection found closed shadow-root + `/ads/about/` wrapper; added `ads-about-link` detector in v0.1.5
-  - [x] v0.1.6: scan Ads About links globally and resolve the feed post from the signal itself
-  - [x] v0.1.7: add Ads About discovery vs container-resolution diagnostics
-  - [x] v0.1.8: research current blockers and refactor detector around cached ARIA/SVG labels + unlabeled-ad shape heuristics
 - [ ] False-positive / false-negative test pass
 - [ ] Tune detectors from real DOM captures
 

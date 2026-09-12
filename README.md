@@ -2,55 +2,50 @@
 
 ## Proje özeti
 
-**fbok**, Facebook ana akışındaki `Sponsored / Sponsorlu` reklam gönderilerini tespit etmeyi ve kullanıcı tercihine göre gizlemeyi amaçlayan, Chrome ve Brave için Manifest V3 tabanlı açık kaynak bir browser extension projesidir.
+**fbok**, Facebook ana akışındaki `Sponsored / Sponsorlu / Ad` reklam gönderilerini tespit etmeyi ve kullanıcı tercihine göre gizlemeyi amaçlayan, Chrome ve Brave için Manifest V3 tabanlı açık kaynak bir browser extension projesidir.
 
 ## Problem
 
-Facebook feed'inde sponsored postlar normal gönderilere çok benzer biçimde render edildiği ve işaretleme yapısı zaman zaman değiştiği için, yalnızca basit metin veya CSS seçicilerine dayanan çözümler kolayca kırılabilir.
+Facebook feed'inde reklam postları normal gönderilere çok benzer biçimde render edilir. Üstelik reklam etiketi kalıcı plain text olmak zorunda değildir: accessibility portal node'u kısa süre yaşayıp silinebilir, SVG sprite üzerinden çizilebilir veya harfleri CSS `order` ile yeniden sıralanmış/decoy span'lerle karıştırılmış olabilir.
 
 ## Neden Facebook'a özel?
 
-Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL listelerini engellemek yerine, Facebook'un DOM yapısını analiz eden **Facebook'a özel, DOM-level bir blocker** olarak tasarlanır.
+Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL listelerini engellemek yerine Facebook'un DOM ve accessibility davranışını analiz eden **Facebook'a özel, DOM-level bir blocker** olarak tasarlanır.
 
 ## Teknik yaklaşım
 
-- Manifest V3
-- Facebook sayfalarında çalışan content script
-- Dinamik/infinite feed değişikliklerini izlemek için `MutationObserver`
-- Birbirinden bağımsız birden fazla sponsored-post detection yöntemi
-- `aria-label` / `aria-labelledby` accessibility detection
-- Facebook reklam metadata'sındaki `/ads/about` linkini yüksek güvenli sinyal olarak kullanma; linki global tarayıp en yakın feed container'ına çözümleme
-- Chromium'daki SVG `<use href="#…">` sprite referanslarını çözme
-- Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini CSS sırasına göre yeniden oluşturma
-- Feed header'ındaki kapalı shadow DOM içinde render edilen `Ad` etiketi için, onu saran `/ads/about/` linkini doğrudan tespit etme
-- Görünür kısa `Ad` etiketi için postun üst metadata bölgesi + yakın advertiser/link bağlamı fallback'i
-- Güncel `aria-posinset` feed container'ları + `FeedUnit`/semantic article fallback'leri
-- **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
+- Manifest V3 + Facebook-only content script
+- `MutationObserver` + animation-frame batching
+- `aria-label` / `aria-labelledby` detection
+- kısa ömürlü accessibility label'larını id → text cache ile kurtarma
+- sonradan gelen text node'larını ve removal record'larını yakalama
+- cached label oluştuğunda reverse-referrer resolution
+- SVG `<use href="#…">` sprite target resolution
+- CSS `order` ile görsel sıralama + üç farklı decoy partition reconstruction
+- yalnızca **pozitif olarak Sponsored/Ad sınıflandırılmış** ama henüz posta bağlanamamış sinyaller için bounded retry queue
+- `aria-posinset`, `FeedUnit`, semantic article ve geometry fallback ile post resolution
+- unlabeled-ad shape heuristics yalnızca **medium-confidence debug candidate** üretir
+- **fail-open:** hide mode açılana kadar şüpheli postlar yalnızca highlight edilir
 
 ## v0.1
 
-v0.1.8 refactors detection around findings from maintained Facebook-specific blockers: ephemeral accessibility labels are cached, SVG/ARIA references are followed, and unlabeled ads can be flagged by conservative shape heuristics. Shape-only detections remain debug-only until false-positive testing is complete. See [`docs/research-notes.md`](docs/research-notes.md).
+v0.1.9 detection lifecycle'ı güncel Facebook-specific blocker davranışlarına göre yeniden düzenler.
 
+Debug görünümü:
+- yüksek güven: kırmızı solid outline
+- orta güven shape candidate: turuncu dashed outline
+- post üzerinde detection reason
+- sol altta scan/cache/late-label/retry sayaçları
 
-Mevcut sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlemez.
-
-- Sponsored adayını outline ile işaretler
-- Detection reason gösterir
-- Debug modunda sayfanın sol altında `scanned / hits / high-vs-medium / cached-label` teşhis sayaçları gösterir
-- İncelenen postları ayrıca işaretleyerek scan/detection ayrımını görünür kılar
-- İngilizce `Sponsored`, Türkçe `Sponsorlu` ve güncel kısa `Ad` etiketlerini tanır
-- Infinite scroll / dinamik DOM değişikliklerini izler
-- GitHub Actions ile manifest ve JavaScript syntax doğrulaması yapar
-
-Manuel doğrulama adımları için [`docs/manual-test.md`](docs/manual-test.md) dosyasına bak.
+Manuel doğrulama için [`docs/manual-test.md`](docs/manual-test.md).
 
 ### Yerel kurulum
 
 1. Repoyu clone/download et.
-2. Chrome'da `chrome://extensions`, Brave'de `brave://extensions` sayfasını aç.
-3. **Developer mode**'u etkinleştir.
+2. Chrome'da `chrome://extensions`, Brave'de `brave://extensions`.
+3. **Developer mode** aç.
 4. **Load unpacked** ile repo klasörünü seç.
-5. Facebook'u aç veya yenile.
+5. Facebook'u hard refresh et.
 
 ### Validation
 
@@ -62,20 +57,19 @@ Harici runtime dependency yoktur.
 
 ## Daha sonraki hedefler
 
-- Gerçek hide mode
-- Extension on/off switch
-- Blocked counter
-- Türkçe + İngilizce arayüz/detection desteği
-- Sidebar ads desteği
-- Opsiyonel `Suggested for you` filtreleme
+- gerçek hide/collapse mode
+- debug/hide switch
+- extension on/off switch
+- blocked counter
+- local settings persistence
+- Türkçe + İngilizce UI
+- sidebar ads
+- optional “Suggested for you” filtering
+- Chrome Web Store yayınlama
 
 ## Privacy
 
-- Zero telemetry
-- Zero external requests
-- Yalnızca `facebook.com` için host erişimi
-- Kullanıcı verisi toplama veya uzak sunucuya gönderme yok
-
-## Yayınlama
-
-Hedef, extension'ı yeterli false-positive testinden sonra **Chrome Web Store** üzerinde yayınlamaktır.
+- zero telemetry
+- zero external requests
+- yalnızca `facebook.com` host erişimi
+- kullanıcı verisi toplama veya uzak sunucuya gönderme yok
