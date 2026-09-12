@@ -1,24 +1,36 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.13";
+  const VERSION = "0.5.1";
 
   const CONFIG = Object.freeze({
     debug: true,
+    hideRightRailSponsored: true,
     labelCacheLimit: 256,
     maxCandidatesPerPost: 420,
     retryIntervalMs: 100,
     retryWindowMs: 5000,
     maxPendingSignals: 64,
+    blockedRecordLimit: 256,
     debugBadgeIntervalMs: 250,
     metadataMaxPixelsFromTop: 280,
     metadataMaxFractionOfPost: 0.42,
     visualMetadataMaxPixelsFromTop: 92,
     visualMetadataLineTolerancePx: 5,
     visualMetadataJoinGapPx: 9,
+    hydrationRetryDelaysMs: [150, 400, 900],
   });
 
   const SPONSORED_LABELS = new Set(["sponsored", "sponsorlu", "ad"]);
+  const STRONG_SPONSORED_LABELS = new Set(["sponsored", "sponsorlu"]);
+  const FOLLOW_LABELS = new Set(["follow", "takipet"]);
+  const SUGGESTED_LABELS = new Set([
+    "suggestedforyou",
+    "suggestedpost",
+    "seniniçinönerilen",
+    "önerilengönderi",
+  ]);
+  const GROUP_JOIN_LABELS = new Set(["join", "joingroup", "katıl", "grubakatıl"]);
 
   const POST_SELECTOR =
     '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"], article';
@@ -29,6 +41,8 @@
   const DETECTED_ATTR = "data-fbok-detected";
   const REASON_ATTR = "data-fbok-reason";
   const CONFIDENCE_ATTR = "data-fbok-confidence";
+  const REVEALED_ATTR = "data-fbok-revealed";
+  const RIGHT_RAIL_ATTR = "data-fbok-right-rail-sponsored";
   const SEEN_ATTR = "data-fbok-seen";
 
   const INVISIBLE_CHARS_RE = /[\p{Cf}\p{Mn}\p{Co}]/gu;
@@ -40,11 +54,19 @@
   const labelTextById = new Map();
   const pendingPosts = new Set();
   const pendingSignals = new Map();
+  const pendingLabelRoots = new Set();
+  const hydrationRetryState = new WeakMap();
+  const blockedPosts = new WeakSet();
+  const revealedPosts = new WeakSet();
+  const blockedRecords = [];
 
   let flushScheduled = false;
   let retryTimer = null;
   let debugBadgeScheduled = false;
   let lastDebugBadgeAt = 0;
+  let settings = { hideSuggested: true };
+  let rightRailScanScheduled = false;
+  let labelScanScheduled = false;
 
   const debugState = {
     scanned: 0,
@@ -61,8 +83,12 @@
     svgMatches: 0,
     ariaMatches: 0,
     textMatches: 0,
+    reactMatches: 0,
+    suggestedMatches: 0,
     visualMetadataMatches: 0,
     shapeCandidates: 0,
+    hydrationRetries: 0,
+    blocked: 0,
     badgeUpdates: 0,
     lastPendingReason: "",
   };
@@ -82,6 +108,283 @@
 
   function isSponsoredLabel(value) {
     return SPONSORED_LABELS.has(normalizeLabel(value));
+  }
+
+  function isStrongSponsoredLabel(value) {
+    return STRONG_SPONSORED_LABELS.has(normalizeLabel(value));
+  }
+
+  function isFollowLabel(value) {
+    return FOLLOW_LABELS.has(normalizeLabel(value));
+  }
+
+  function isSuggestedLabel(value) {
+    return SUGGESTED_LABELS.has(normalizeLabel(value));
+  }
+
+  function isGroupJoinLabel(value) {
+    return GROUP_JOIN_LABELS.has(normalizeLabel(value));
+  }
+
+  function exactTextNode(root, labels) {
+    for (const node of root.querySelectorAll("span, div, a")) {
+      if (
+        node.children.length === 0 &&
+        labels.has(normalizeLabel(node.textContent))
+      ) {
+        return node;
+      }
+    }
+
+    return null;
+  }
+
+  function rightRailSponsoredTargets(root) {
+    const targets = new Set();
+    const heading = exactTextNode(root, new Set(["sponsored", "sponsorlu"]));
+    if (!heading) return targets;
+
+    targets.add(heading);
+
+    const rootRect = root.getBoundingClientRect();
+    const contactHeading = exactTextNode(
+      root,
+      new Set(["contacts", "kişiler"]),
+    );
+    const endTop = contactHeading
+      ? contactHeading.getBoundingClientRect().top
+      : Number.POSITIVE_INFINITY;
+    const headingTop = heading.getBoundingClientRect().top;
+
+    let candidate = heading.parentElement;
+    let bestModule = null;
+    for (let depth = 0; candidate && candidate !== root && depth < 6; depth += 1) {
+      const rect = candidate.getBoundingClientRect();
+      const text = cleanText(candidate.innerText || candidate.textContent);
+
+      if (
+        text.toLocaleLowerCase().includes("sponsored") &&
+        rect.width >= 180 &&
+        rect.height >= 40 &&
+        rect.height <= 700 &&
+        rect.bottom <= endTop + 8
+      ) {
+        bestModule = candidate;
+      }
+      candidate = candidate.parentElement;
+    }
+    if (bestModule) targets.add(bestModule);
+
+    for (const element of root.querySelectorAll("img, a, span")) {
+      const rect = element.getBoundingClientRect();
+      if (
+        rect.top < headingTop - 8 ||
+        rect.top >= endTop ||
+        rect.left < rootRect.left - 8 ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        continue;
+      }
+
+      if (
+        element.tagName.toLowerCase() === "span" &&
+        element.children.length !== 0
+      ) {
+        continue;
+      }
+
+      let card = element.parentElement;
+      for (let depth = 0; card && card !== root && depth < 6; depth += 1) {
+        const cardRect = card.getBoundingClientRect();
+        if (
+          cardRect.width >= 160 &&
+          cardRect.height >= 24 &&
+          cardRect.bottom <= endTop + 8
+        ) {
+          targets.add(card);
+          break;
+        }
+        card = card.parentElement;
+      }
+
+      if (element.tagName.toLowerCase() === "span") targets.add(element);
+    }
+
+    return targets;
+  }
+
+  function applyRightRailVisibility() {
+    const roots = document.querySelectorAll('[role="complementary"]');
+
+    for (const root of roots) {
+      const current = Array.from(
+        root.querySelectorAll(`[${RIGHT_RAIL_ATTR}="true"]`),
+      );
+      const next = CONFIG.hideRightRailSponsored
+        ? rightRailSponsoredTargets(root)
+        : new Set();
+
+      for (const module of current) {
+        if (!next.has(module)) module.removeAttribute(RIGHT_RAIL_ATTR);
+      }
+
+      for (const module of next) {
+        if (!module.hasAttribute(RIGHT_RAIL_ATTR)) {
+          module.setAttribute(RIGHT_RAIL_ATTR, "true");
+        }
+      }
+    }
+  }
+
+  function scheduleRightRailVisibility() {
+    if (rightRailScanScheduled) return;
+    rightRailScanScheduled = true;
+
+    requestAnimationFrame(() => {
+      rightRailScanScheduled = false;
+      applyRightRailVisibility();
+    });
+  }
+
+  function exactVisibleControlLabel(post, labels) {
+    for (const node of post.querySelectorAll(
+      'button, [role="button"], a, span',
+    )) {
+      if (!isElementVisible(node) || !isLikelyMetadataNode(node, post)) {
+        continue;
+      }
+
+      const candidates = [
+        node.getAttribute("aria-label"),
+        node.getAttribute("title"),
+        ownText(node),
+        cleanText(node.textContent).slice(0, 40),
+      ];
+
+      if (candidates.some((value) => labels.has(normalizeLabel(value)))) {
+        return node;
+      }
+    }
+
+    return null;
+  }
+
+  function suggestedPostSignal(post) {
+    if (!settings.hideSuggested || !(post instanceof Element)) return null;
+
+    const suggestedLabel = exactVisibleControlLabel(post, SUGGESTED_LABELS);
+    if (suggestedLabel) {
+      debugState.suggestedMatches += 1;
+      return {
+        reason: "suggested-label-post",
+        confidence: "high",
+        node: suggestedLabel,
+      };
+    }
+
+    const followControl = exactVisibleControlLabel(post, FOLLOW_LABELS);
+    if (followControl) {
+      debugState.suggestedMatches += 1;
+      return {
+        reason: "suggested-follow-post",
+        confidence: "high",
+        node: followControl,
+      };
+    }
+
+    const joinControl = exactVisibleControlLabel(post, GROUP_JOIN_LABELS);
+    if (joinControl) {
+      debugState.suggestedMatches += 1;
+      return {
+        reason: "suggested-group-join-post",
+        confidence: "high",
+        node: joinControl,
+      };
+    }
+
+    return null;
+  }
+
+  function isCorroboratedAd(post) {
+    return Boolean(post && !hasPermalink(post) && hasOutboundLink(post));
+  }
+
+  function findSponsoredCategory(
+    value,
+    depth = 0,
+    seen = new Set(),
+    insideFeed = false,
+  ) {
+    if (depth > 4 || value === null || typeof value !== "object") {
+      return false;
+    }
+
+    if (seen.has(value)) return false;
+    seen.add(value);
+
+    for (const key of Object.keys(value).slice(0, 80)) {
+      const child = value[key];
+
+      if (
+        insideFeed &&
+        /^category$/i.test(key) &&
+        (child === "SPONSORED" || child === 5)
+      ) {
+        return true;
+      }
+
+      if (child && typeof child === "object") {
+        if (
+          findSponsoredCategory(
+            child,
+            depth + 1,
+            seen,
+            insideFeed || /feed/i.test(key),
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function reactPropsOf(element) {
+    for (const key of Object.keys(element)) {
+      if (key.startsWith("__reactProps")) return element[key];
+    }
+
+    return null;
+  }
+
+  function reactSponsoredSignal(post) {
+    if (!(post instanceof Element)) return null;
+
+    const nodes = [
+      post,
+      ...Array.from(
+        post.querySelectorAll(
+          '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"]',
+        ),
+      ).slice(0, 24),
+    ];
+
+    for (const node of [...new Set(nodes)]) {
+      const props = reactPropsOf(node);
+
+      if (props && findSponsoredCategory(props)) {
+        debugState.reactMatches += 1;
+        return {
+          reason: "react-feed-category-sponsored",
+          confidence: "high",
+          node,
+        };
+      }
+    }
+
+    return null;
   }
 
   function ownText(element) {
@@ -327,12 +630,52 @@
     badge.textContent =
       `fbok ${VERSION} · scanned ${debugState.scanned} · hits ${debugState.hits}` +
       ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
+      ` · blocked ${debugState.blocked}` +
       ` · cache ${labelTextById.size}` +
       ` · late/rescue ${debugState.lateTextLabels}/${debugState.rescuedLabels}` +
       ` · retry ${pendingSignals.size}` +
       (pendingSignals.size > 0 && debugState.lastPendingReason
         ? `(${debugState.lastPendingReason})`
         : "");
+  }
+
+  function renderBlockedControls() {
+    if (!CONFIG.debug) return;
+
+    let controls = document.getElementById("fbok-debug-controls");
+
+    if (!controls) {
+      controls = document.createElement("div");
+      controls.id = "fbok-debug-controls";
+      document.documentElement.appendChild(controls);
+    }
+
+    controls.replaceChildren();
+
+    blockedRecords.forEach((record, index) => {
+      if (!record.post.isConnected || revealedPosts.has(record.post)) return;
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = `Reveal blocked #${index + 1}`;
+      button.title = `${record.confidence} · ${record.reason}`;
+      button.addEventListener("click", () => {
+        if (!record.post.isConnected) return;
+
+        revealedPosts.add(record.post);
+        record.post.setAttribute(REVEALED_ATTR, "true");
+        renderBlockedControls();
+        updateDebugBadge(true);
+        window.requestAnimationFrame(() => {
+          if (record.post.isConnected) {
+            record.post.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        });
+      });
+      controls.appendChild(button);
+    });
+
+    controls.hidden = controls.childElementCount === 0;
   }
 
   function updateDebugBadge(force = false) {
@@ -376,6 +719,31 @@
     post.setAttribute(DETECTED_ATTR, "true");
     post.setAttribute(REASON_ATTR, reasons.join(", "));
     post.setAttribute(CONFIDENCE_ATTR, effectiveConfidence);
+
+    const shouldBlock =
+      effectiveConfidence === "high" || effectiveConfidence === "medium";
+
+    if (shouldBlock && !blockedPosts.has(post)) {
+      blockedPosts.add(post);
+      debugState.blocked += 1;
+
+      if (blockedRecords.length < CONFIG.blockedRecordLimit) {
+        blockedRecords.push({
+          post,
+          confidence: effectiveConfidence,
+          reason: reasons.join(", "),
+          text: cleanText(post.innerText || post.textContent).slice(0, 500),
+          links: Array.from(post.querySelectorAll("a[href]"))
+            .slice(0, 16)
+            .map((link) => ({
+              text: cleanText(link.innerText || link.textContent).slice(0, 120),
+              href: link.href,
+            })),
+        });
+      }
+
+      renderBlockedControls();
+    }
 
     if (!wasDetected) {
       debugState.hits += 1;
@@ -431,6 +799,8 @@
 
   function cacheLabelTargets(root) {
     if (!(root instanceof Element)) return;
+
+    if (!root.id && !root.querySelector("[id]")) return;
 
     if (root.id) rememberLabelTarget(root);
 
@@ -626,7 +996,7 @@
     );
   }
 
-  function classifyStructuredSignal(node) {
+  function classifyStructuredSignal(node, post = null) {
     if (!(node instanceof Element)) return null;
 
     const ariaLabel = node.getAttribute("aria-label");
@@ -634,7 +1004,11 @@
     if (ariaLabel) {
       const cleaned = cleanText(ariaLabel);
 
-      if (/sponsored content$/i.test(cleaned) || isSponsoredLabel(cleaned)) {
+      if (
+        /sponsored content$/i.test(cleaned) ||
+        isStrongSponsoredLabel(cleaned) ||
+        (normalizeLabel(cleaned) === "ad" && isCorroboratedAd(post))
+      ) {
         debugState.ariaMatches += 1;
         return {
           reason: /sponsored content$/i.test(cleaned)
@@ -647,7 +1021,11 @@
 
     const title = node.getAttribute("title");
 
-    if (title && isSponsoredLabel(title)) {
+    if (
+      title &&
+      (isStrongSponsoredLabel(title) ||
+        (normalizeLabel(title) === "ad" && isCorroboratedAd(post)))
+    ) {
       debugState.ariaMatches += 1;
       return { reason: "title-label", confidence: "high" };
     }
@@ -663,14 +1041,24 @@
           ? cleanText(target.textContent)
           : labelTextById.get(id);
 
-        if (text && isSponsoredLabel(text)) {
+        if (
+          text &&
+          (isStrongSponsoredLabel(text) ||
+            (normalizeLabel(text) === "ad" && isCorroboratedAd(post)))
+        ) {
           debugState.svgMatches += 1;
           return { reason: "svg-sprite-ref", confidence: "high" };
         }
       }
     }
 
-    if (referencedLabelText(node).some(isSponsoredLabel)) {
+    if (
+      referencedLabelText(node).some(
+        (text) =>
+          isStrongSponsoredLabel(text) ||
+          (normalizeLabel(text) === "ad" && isCorroboratedAd(post)),
+      )
+    ) {
       debugState.ariaMatches += 1;
       return { reason: "aria-labelledby-ref", confidence: "high" };
     }
@@ -694,7 +1082,11 @@
     if (node.children.length === 0) {
       const text = cleanText(node.textContent);
 
-      if (text.length <= 40 && isSponsoredLabel(text)) {
+      if (
+        text.length <= 40 &&
+        (isStrongSponsoredLabel(text) ||
+          (normalizeLabel(text) === "ad" && isCorroboratedAd(post)))
+      ) {
         debugState.textMatches += 1;
         return { reason: "visible-text", confidence: "high" };
       }
@@ -702,13 +1094,21 @@
 
     const direct = ownText(node);
 
-    if (direct && direct.length <= 40 && isSponsoredLabel(direct)) {
+    if (
+      direct &&
+      direct.length <= 40 &&
+      (isStrongSponsoredLabel(direct) ||
+        (normalizeLabel(direct) === "ad" && isCorroboratedAd(post)))
+    ) {
       debugState.textMatches += 1;
       return { reason: "own-text-label", confidence: "high" };
     }
 
     for (const variant of characterSplitVariants(node)) {
-      if (isSponsoredLabel(variant)) {
+      if (
+        isStrongSponsoredLabel(variant) ||
+        (normalizeLabel(variant) === "ad" && isCorroboratedAd(post))
+      ) {
         debugState.textMatches += 1;
         return {
           reason: "visible-text-reconstructed",
@@ -722,7 +1122,7 @@
 
   function classifySignal(node, post = null) {
     return (
-      classifyStructuredSignal(node) ||
+      classifyStructuredSignal(node, post) ||
       classifyTextSignal(node, post)
     );
   }
@@ -767,6 +1167,49 @@
       });
     }
 
+    // Facebook sometimes keeps the visible short label as a direct text node
+    // in a mixed header wrapper (for example beside the audience globe icon).
+    // Leaf-element scanning misses that text even though its rendered geometry
+    // is available. Only inspect short direct text fragments in the same
+    // bounded metadata band; the Ad result remains corroboration-gated below.
+    const walker = document.createTreeWalker(post, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+
+    while (textNode) {
+      const parent = textNode.parentElement;
+
+      if (parent && parent.children.length !== 0 && isElementVisible(parent)) {
+        const text = cleanText(textNode.textContent);
+
+        if (text && text.length <= 32) {
+          const range = document.createRange();
+          range.selectNodeContents(textNode);
+          const rect = range.getBoundingClientRect();
+          const top = rect.top - postRect.top;
+
+          if (
+            top >= -8 &&
+            top <= CONFIG.visualMetadataMaxPixelsFromTop &&
+            rect.height > 0 &&
+            rect.height <= 42 &&
+            rect.width > 0 &&
+            rect.width <= 220
+          ) {
+            leaves.push({
+              node: parent,
+              text,
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              centerY: rect.top + rect.height / 2,
+            });
+          }
+        }
+      }
+
+      textNode = walker.nextNode();
+    }
+
     if (leaves.length === 0) return null;
 
     leaves.sort((a, b) => {
@@ -795,8 +1238,7 @@
         line.leaves.length;
     }
 
-    const shapeCorroborated =
-      !hasPermalink(post) && hasOutboundLink(post);
+    const shapeCorroborated = isCorroboratedAd(post);
 
     for (const line of lines) {
       line.leaves.sort((a, b) => a.left - b.left);
@@ -825,10 +1267,7 @@
       for (const segment of segments) {
         const normalized = normalizeLabel(segment.text);
 
-        if (
-          normalized === "sponsored" ||
-          normalized === "sponsorlu"
-        ) {
+        if (normalized === "sponsored" || normalized === "sponsorlu") {
           debugState.visualMetadataMatches += 1;
           return {
             reason: "metadata-visual-sponsored",
@@ -897,8 +1336,7 @@
 
       if (
         tokens.includes("ad") &&
-        !hasPermalink(post) &&
-        hasOutboundLink(post)
+        isCorroboratedAd(post)
       ) {
         debugState.textMatches += 1;
         return {
@@ -1017,6 +1455,9 @@
   function detectHighConfidenceSignals(post) {
     const hits = [];
 
+    const reactHit = reactSponsoredSignal(post);
+    if (reactHit) hits.push(reactHit);
+
     for (const node of candidateElements(post)) {
       const hit = classifySignal(node, post);
 
@@ -1033,6 +1474,11 @@
     const renderedHit = renderedMetadataSignal(post);
     if (renderedHit) {
       hits.push(renderedHit);
+    }
+
+    if (hits.length === 0) {
+      const suggestedHit = suggestedPostSignal(post);
+      if (suggestedHit) hits.push(suggestedHit);
     }
 
     if (hits.length === 0) return null;
@@ -1110,7 +1556,6 @@
 
     const dangling = hasDanglingLabelReference(post);
     const outbound = hasOutboundLink(post);
-
     if (!dangling && !outbound) return null;
 
     debugState.shapeCandidates += 1;
@@ -1151,7 +1596,106 @@
       markDetected(post, shape);
     }
 
+    scheduleHydrationRetry(post);
     updateDebugBadge();
+  }
+
+  function enqueueLabelRoot(root) {
+    if (!(root instanceof Element) || !root.isConnected) return;
+
+    for (const pending of pendingLabelRoots) {
+      if (pending === root || pending.contains(root)) return;
+      if (root.contains(pending)) pendingLabelRoots.delete(pending);
+    }
+
+    pendingLabelRoots.add(root);
+    if (labelScanScheduled) return;
+    labelScanScheduled = true;
+
+    requestAnimationFrame(() => {
+      labelScanScheduled = false;
+
+      const queued = Array.from(pendingLabelRoots);
+      pendingLabelRoots.clear();
+
+      for (const root of queued) {
+        if (root.isConnected) scanLabelRoot(root);
+      }
+    });
+  }
+
+  function scheduleHydrationRetry(post) {
+    const existing = hydrationRetryState.get(post) ?? {
+      attempt: 0,
+      timer: null,
+    };
+
+    if (
+      existing.timer !== null ||
+      existing.attempt >= CONFIG.hydrationRetryDelaysMs.length
+    ) {
+      return;
+    }
+
+    const delay = CONFIG.hydrationRetryDelaysMs[existing.attempt];
+    existing.attempt += 1;
+    existing.timer = window.setTimeout(() => {
+      existing.timer = null;
+
+      if (!post.isConnected || post.getAttribute(CONFIDENCE_ATTR) === "high") {
+        hydrationRetryState.delete(post);
+        return;
+      }
+
+      debugState.hydrationRetries += 1;
+      inspectPost(post);
+    }, delay);
+
+    hydrationRetryState.set(post, existing);
+  }
+
+  function blockedPostDetails() {
+    return blockedRecords.map((record, index) => ({
+      index,
+      confidence: record.confidence,
+      reason: record.reason,
+      text: record.text,
+      links: record.links,
+      stillConnected: record.post.isConnected,
+      hiddenNow:
+        record.post.isConnected &&
+        !revealedPosts.has(record.post) &&
+        getComputedStyle(record.post).display === "none",
+      revealed: revealedPosts.has(record.post),
+    }));
+  }
+
+  function installDebugBridge() {
+    document.addEventListener("fbok-debug-request", (event) => {
+      const action = event.detail?.action;
+      let value = null;
+
+      if (action === "blockedPosts") {
+        value = blockedPostDetails();
+      } else if (action === "diagnostics") {
+        value = {
+          ...debugState,
+          mediumHideLocked: true,
+          hideSuggested: settings.hideSuggested,
+          cachedLabels: labelTextById.size,
+          pendingSignals: pendingSignals.size,
+          currentlyHidden: blockedPostDetails().filter((record) => record.hiddenNow).length,
+        };
+      }
+
+      if (value === null) return;
+
+      document.dispatchEvent(
+        new CustomEvent("fbok-debug-response", {
+          detail: { action, value },
+        }),
+      );
+    });
   }
 
   function enqueuePost(post) {
@@ -1227,9 +1771,7 @@
       cacheLabelTargets(node);
       enqueueFromNode(node);
 
-      requestAnimationFrame(() => {
-        if (node.isConnected) scanLabelRoot(node);
-      });
+      enqueueLabelRoot(node);
 
       return;
     }
@@ -1255,7 +1797,17 @@
   }
 
   const observer = new MutationObserver((mutations) => {
+    let rightRailTouched = false;
+
     for (const mutation of mutations) {
+      const target =
+        mutation.target instanceof Element
+          ? mutation.target
+          : mutation.target.parentElement;
+      if (target?.closest('[role="complementary"]')) {
+        rightRailTouched = true;
+      }
+
       for (const node of mutation.removedNodes) {
         handleRemovedNode(node, mutation.target);
       }
@@ -1264,15 +1816,53 @@
         handleAddedNode(node, mutation.target);
       }
 
-      if (mutation.target instanceof Element) {
-        const post = resolvePostContainer(mutation.target);
-        if (post) enqueuePost(post);
-      }
+      // Added nodes already enqueue their containing post. Avoid rescanning the
+      // mutation target as well; Facebook often inserts several nested nodes
+      // for one visual update, and the frame queue already coalesces them.
     }
 
     sweepShapeCandidates();
+    if (rightRailTouched) scheduleRightRailVisibility();
     updateDebugBadge();
   });
+
+  function clearSuggestedDetections() {
+    for (const post of document.querySelectorAll(
+      `[${DETECTED_ATTR}="true"]`,
+    )) {
+      const reasons = (post.getAttribute(REASON_ATTR) ?? "")
+        .split(",")
+        .map((reason) => reason.trim())
+        .filter(Boolean);
+      const remaining = reasons.filter(
+        (reason) => !reason.startsWith("suggested-"),
+      );
+
+      if (remaining.length === reasons.length) continue;
+
+      if (remaining.length === 0) {
+        post.removeAttribute(DETECTED_ATTR);
+        post.removeAttribute(REASON_ATTR);
+        post.removeAttribute(CONFIDENCE_ATTR);
+      } else {
+        post.setAttribute(REASON_ATTR, remaining.join(", "));
+      }
+    }
+  }
+
+  function installSettingsListener() {
+    if (!globalThis.chrome?.storage?.onChanged) return;
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "sync" || !changes.hideSuggested) return;
+
+      settings.hideSuggested = Boolean(changes.hideSuggested.newValue);
+
+      if (!settings.hideSuggested) clearSuggestedDetections();
+      scanExistingFeed();
+      updateDebugBadge(true);
+    });
+  }
 
   function start() {
     const root = document.body || document.documentElement;
@@ -1292,6 +1882,7 @@
         const root = document.body || document.documentElement;
         scanLabelRoot(root);
         scanExistingFeed();
+        scheduleRightRailVisibility();
       },
       scannedCount() {
         return debugState.scanned;
@@ -1310,14 +1901,23 @@
           post,
         }));
       },
+      blockedPosts() {
+        return blockedPostDetails();
+      },
       diagnostics() {
         return {
           ...debugState,
+          mediumHideLocked: true,
+          hideSuggested: settings.hideSuggested,
           cachedLabels: labelTextById.size,
           pendingSignals: pendingSignals.size,
+          currentlyHidden: blockedPostDetails().filter((record) => record.hiddenNow).length,
         };
       },
     });
+
+    installDebugBridge();
+    installSettingsListener();
 
     if (CONFIG.debug) {
       console.debug(
@@ -1326,7 +1926,21 @@
     }
 
     updateDebugBadge(true);
+    renderBlockedControls();
+    scheduleRightRailVisibility();
   }
 
-  start();
+  function loadSettingsAndStart() {
+    if (!globalThis.chrome?.storage?.sync) {
+      start();
+      return;
+    }
+
+    chrome.storage.sync.get({ hideSuggested: true }, (stored) => {
+      settings.hideSuggested = Boolean(stored.hideSuggested);
+      start();
+    });
+  }
+
+  loadSettingsAndStart();
 })();

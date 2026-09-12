@@ -1,12 +1,17 @@
 {
   "manifest_version": 3,
   "name": "fbok",
-  "version": "0.1.13",
-  "description": "Detects Facebook Sponsored / Sponsorlu / Ad feed posts and hides only high-confidence matches.",
+  "version": "0.5.1",
+  "description": "Detects and hides Facebook Sponsored / Sponsorlu / Ad posts, with an optional suggested-post filter.",
   "host_permissions": [
     "https://facebook.com/*",
     "https://www.facebook.com/*"
   ],
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "fbok settings",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": [

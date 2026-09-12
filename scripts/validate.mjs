@@ -7,12 +7,20 @@ const allowedFacebookHosts = new Set([
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
 
+if (manifest.action?.default_popup) {
+  await access(manifest.action.default_popup);
+}
+
+if (!manifest.permissions?.includes("storage")) {
+  throw new Error("storage permission is required for popup settings");
+}
+
 if (manifest.manifest_version !== 3) {
   throw new Error("manifest_version must be 3");
 }
 
-if (!/^0\.1\.\d+$/.test(manifest.version)) {
-  throw new Error(`Unexpected v0.1 version: ${manifest.version}`);
+if (!/^0\.\d+\.\d+$/.test(manifest.version)) {
+  throw new Error(`Unexpected 0.x version: ${manifest.version}`);
 }
 
 for (const permission of manifest.host_permissions ?? []) {

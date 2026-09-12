@@ -2,10 +2,25 @@
   display: none !important;
 }
 
+[data-fbok-right-rail-sponsored="true"] {
+  display: none !important;
+}
+
 [data-fbok-detected="true"][data-fbok-confidence="medium"] {
   outline: 3px dashed #ff9500 !important;
   outline-offset: -3px !important;
   position: relative !important;
+}
+
+[data-fbok-detected="true"][data-fbok-confidence="medium"]:not(
+    [data-fbok-revealed="true"]
+  ) {
+  display: none !important;
+}
+
+[data-fbok-detected="true"][data-fbok-confidence="medium"][data-fbok-revealed="true"],
+[data-fbok-detected="true"][data-fbok-confidence="high"][data-fbok-revealed="true"] {
+  display: revert !important;
 }
 
 [data-fbok-detected="true"][data-fbok-confidence="medium"]::after {
@@ -37,4 +52,29 @@
   font: 600 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
   pointer-events: none !important;
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35) !important;
+}
+
+#fbok-debug-controls {
+  position: fixed !important;
+  left: 10px !important;
+  bottom: 42px !important;
+  z-index: 2147483647 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  pointer-events: auto !important;
+}
+
+#fbok-debug-controls[hidden] {
+  display: none !important;
+}
+
+#fbok-debug-controls button {
+  padding: 5px 8px !important;
+  border: 1px solid rgba(255, 149, 0, 0.8) !important;
+  border-radius: 5px !important;
+  background: rgba(20, 20, 20, 0.94) !important;
+  color: #fff !important;
+  cursor: pointer !important;
+  font: 600 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
 }
