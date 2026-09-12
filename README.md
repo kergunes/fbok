@@ -21,7 +21,7 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - `aria-label` / `aria-labelledby` accessibility detection
 - Chromium'daki SVG `<use href="#…">` sprite referanslarını çözme
 - Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini CSS sırasına göre yeniden oluşturma
-- Feed header'ında görünen kısa `Ad` etiketini yalnızca sıkı metadata yakınlığında tespit etme
+- Feed header'ında görünen kısa `Ad` etiketini yalnızca postun üst metadata bölgesi + yakın advertiser/link bağlamında tespit etme
 - Güncel `aria-posinset` feed container'ları + `FeedUnit`/semantic article fallback'leri
 - **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
 
@@ -31,6 +31,7 @@ Mevcut sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlem
 
 - Sponsored adayını outline ile işaretler
 - Detection reason gösterir
+- Debug modunda sayfanın sol altında `scanned / hits` sayacı gösterir
 - İncelenen postları ayrıca işaretleyerek scan/detection ayrımını görünür kılar
 - İngilizce `Sponsored`, Türkçe `Sponsorlu` ve güncel kısa `Ad` etiketlerini tanır
 - Infinite scroll / dinamik DOM değişikliklerini izler

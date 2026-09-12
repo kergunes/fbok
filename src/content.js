@@ -222,19 +222,80 @@
     return null;
   }
 
+  function hasNearbyIdentityLink(node, post) {
+    let container = node.parentElement;
+
+    for (let depth = 0; container && depth < 5; depth += 1) {
+      if (container === post) break;
+
+      const links = Array.from(container.querySelectorAll("a[href]"));
+      if (
+        links.some((link) => {
+          if (!isElementVisible(link)) return false;
+
+          const href = link.getAttribute("href") ?? "";
+          if (!href || href.startsWith("#")) return false;
+
+          const rect = link.getBoundingClientRect();
+          const nodeRect = node.getBoundingClientRect();
+
+          return (
+            Math.abs(rect.top - nodeRect.top) <= 80 &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        })
+      ) {
+        return true;
+      }
+
+      container = container.parentElement;
+    }
+
+    return false;
+  }
+
+  function isLikelyShortAdMetadataNode(node, post) {
+    if (!(node instanceof Element) || !isElementVisible(node)) return false;
+
+    const nodeRect = node.getBoundingClientRect();
+    const postRect = post.getBoundingClientRect();
+    if (postRect.width <= 0 || postRect.height <= 0) return false;
+
+    const offsetFromTop = nodeRect.top - postRect.top;
+
+    // Facebook currently renders the short "Ad" label directly below/next to
+    // the advertiser identity. Keep this detector intentionally narrow so a
+    // body-text occurrence of "ad" cannot hide a normal post.
+    if (offsetFromTop < -8 || offsetFromTop > 125) return false;
+    if (nodeRect.left < postRect.left - 8 || nodeRect.right > postRect.right + 8) {
+      return false;
+    }
+
+    return hasNearbyIdentityLink(node, post);
+  }
+
   function detectVisibleExactText(post) {
     const nodes = candidateElements(post, "span, a, div[role='button']");
 
     for (const node of nodes) {
       if (node.children.length > 0) continue;
-      if (!isLikelyMetadataNode(node, post, true)) continue;
 
       const text = node.textContent ?? "";
-      if (text.length <= 32 && isSponsoredLabel(text)) {
+
+      if (
+        text.length <= 32 &&
+        isLikelyMetadataNode(node, post, true) &&
+        isSponsoredLabel(text)
+      ) {
         return { reason: "visible-text", node, confidence: "high" };
       }
 
-      if (text.length <= 8 && isShortVisibleAdLabel(text)) {
+      if (
+        text.length <= 8 &&
+        isShortVisibleAdLabel(text) &&
+        isLikelyShortAdMetadataNode(node, post)
+      ) {
         return { reason: "visible-short-ad-label", node, confidence: "high" };
       }
     }
@@ -356,6 +417,21 @@
     };
   }
 
+  function updateDebugBadge() {
+    if (!CONFIG.debug) return;
+
+    let badge = document.getElementById("fbok-debug-badge");
+    if (!badge) {
+      badge = document.createElement("div");
+      badge.id = "fbok-debug-badge";
+      document.documentElement.appendChild(badge);
+    }
+
+    const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
+    const detected = document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
+    badge.textContent = `fbok 0.1.4 · scanned ${scanned} · hits ${detected}`;
+  }
+
   function markDetected(post, detection) {
     post.setAttribute(DETECTED_ATTR, "true");
     post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
@@ -367,6 +443,7 @@
         confidence: detection.confidence,
         post,
       });
+      updateDebugBadge();
     }
   }
 
@@ -374,6 +451,7 @@
     if (!(post instanceof Element) || !isFeedPost(post)) return;
 
     post.setAttribute(SEEN_ATTR, "true");
+    updateDebugBadge();
     if (post.getAttribute(DETECTED_ATTR) === "true") return;
 
     const detection = detectSponsored(post);
@@ -442,7 +520,7 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.3",
+      version: "0.1.4",
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
