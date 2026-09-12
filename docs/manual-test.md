@@ -12,7 +12,9 @@ v0.1 deliberately **does not hide posts**. It only highlights high-confidence Sp
 
 ## Expected behavior
 
-A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.7 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
+A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.8 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
+
+High-confidence paths:
 
 - `svg-sprite-ref`
 - `accessibility-label`
@@ -22,6 +24,12 @@ A detected sponsored post receives a red outline and an `fbok · <reason>` badge
 - `visible-text-reconstructed`
 - `visible-short-ad-label`
 - `ads-about-link`
+- `own-text-label`
+
+Shape-only debug paths:
+- `dangling-label-no-permalink`
+- `outbound-no-permalink`
+- `ad-role-shape`
 
 Each inspected feed post also receives `data-fbok-seen="true"`. This separates "the detector scanned it and did not match" from "the scanner never reached it."
 
@@ -66,9 +74,21 @@ When reporting a false positive or missed ad, capture the relevant post DOM with
 
 The fixed badge now shows:
 
-`fbok 0.1.7 · scanned N · hits N · adlinks N · resolved N · unresolved N`
+`fbok 0.1.8 · scanned N · hits N · adlinks N · resolved N · unresolved N`
 
 - `adlinks 0`: the current Ads About signal is not visible to normal DOM queries; inspect the ad label wrapper again.
 - `adlinks > 0, resolved 0`: the signal is visible, but feed-post container resolution is wrong.
 - `resolved > 0, hits 0`: this is a detector state/marking bug.
 - `hits > 0`: the Ads About path is working.
+
+
+## v0.1.8 interpretation
+
+The badge shows high- vs medium-confidence detections. A medium hit is a shape heuristic and must be treated as a candidate, not a verified ad.
+
+For the first validation pass, record:
+- whether each visible feed ad is highlighted;
+- its reason(s);
+- whether any organic post receives a medium or high hit.
+
+Do not enable real hide mode until shape-only false positives are understood.

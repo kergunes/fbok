@@ -1,44 +1,71 @@
 (() => {
   "use strict";
 
+  const VERSION = "0.1.8";
   const CONFIG = Object.freeze({
     debug: true,
-    maxCandidatesPerPost: 260,
-    metadataMaxPixelsFromTop: 240,
-    metadataMaxFractionOfPost: 0.38,
+    maxCandidatesPerPost: 420,
+    metadataMaxPixelsFromTop: 260,
+    metadataMaxFractionOfPost: 0.4,
+    labelCacheLimit: 200,
   });
 
-  const LABELS = new Set(["sponsored", "sponsorlu"]);
-  const SHORT_VISIBLE_LABELS = new Set(["ad"]);
-  const POST_SELECTOR = '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"], article';
+  const SPONSORED_LABELS = new Set(["sponsored", "sponsorlu", "ad"]);
+  const POST_SELECTOR =
+    '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"], article';
+  const LABEL_SELECTOR =
+    'span, a, use, text, [aria-label], [aria-labelledby], [role="button"]';
+
   const DETECTED_ATTR = "data-fbok-detected";
   const REASON_ATTR = "data-fbok-reason";
   const CONFIDENCE_ATTR = "data-fbok-confidence";
   const SEEN_ATTR = "data-fbok-seen";
 
+  const INVISIBLE_CHARS_RE = /[\p{Cf}\p{Mn}\p{Co}]/gu;
+  const PERMALINK_RE =
+    /\/(posts|permalink|permalink\.php|story\.php|videos|video\.php|watch|photo|photo\.php|photos|reel|reels|groups|events|notes|share|media\/set|commerce\/listing|marketplace\/item)([\/?]|$)/i;
+
   const pendingPosts = new Set();
+  const labelTextById = new Map();
   let flushScheduled = false;
 
   const debugState = {
-    adLinksSeen: 0,
-    adLinksResolved: 0,
-    adLinksUnresolved: 0,
+    scanned: 0,
+    hits: 0,
+    highHits: 0,
+    mediumHits: 0,
+    cachedLabels: 0,
+    danglingCandidates: 0,
+    outboundCandidates: 0,
+    roleShapeCandidates: 0,
+    labelElementsScanned: 0,
   };
 
-  function normalizeLabel(value) {
+  function cleanText(value) {
     return String(value ?? "")
       .normalize("NFKC")
+      .replace(INVISIBLE_CHARS_RE, "")
+      .trim();
+  }
+
+  function normalizeLabel(value) {
+    return cleanText(value)
       .toLocaleLowerCase()
-      .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
       .replace(/[^\p{L}\p{N}]+/gu, "");
   }
 
   function isSponsoredLabel(value) {
-    return LABELS.has(normalizeLabel(value));
+    return SPONSORED_LABELS.has(normalizeLabel(value));
   }
 
-  function isShortVisibleAdLabel(value) {
-    return SHORT_VISIBLE_LABELS.has(normalizeLabel(value));
+  function ownText(element) {
+    let out = "";
+    for (const node of element.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE) continue;
+      out += node.textContent ?? "";
+      if (out.length > 300) return "";
+    }
+    return cleanText(out);
   }
 
   function isElementVisible(element) {
@@ -68,7 +95,11 @@
     if (positionedAncestor) return false;
 
     if (!post.closest('[role="main"]')) return false;
-    if (post.closest('[role="dialog"], [role="navigation"], [role="complementary"]')) {
+    if (
+      post.closest(
+        '[role="dialog"], [role="navigation"], [role="complementary"]',
+      )
+    ) {
       return false;
     }
 
@@ -82,12 +113,15 @@
   }
 
   function isLegacyFeedArticle(post) {
-    if (!(post.matches('[role="article"]') || post.matches("article"))) return false;
-    return Boolean(post.closest('[role="feed"]'));
+    if (!(post.matches('[role="article"]') || post.matches("article"))) {
+      return false;
+    }
+    return Boolean(post.closest('[role="feed"], [role="main"]'));
   }
 
   function isFeedPost(post) {
     if (!(post instanceof Element)) return false;
+
     return (
       isPageletFeedUnit(post) ||
       isTopLevelPositionedItem(post) ||
@@ -107,13 +141,7 @@
     return null;
   }
 
-  function firstAuthorHeading(post) {
-    return post.querySelector(
-      'h1, h2, h3, h4, [role="heading"][aria-level="1"], [role="heading"][aria-level="2"], [role="heading"][aria-level="3"], [role="heading"][aria-level="4"]',
-    );
-  }
-
-  function isLikelyMetadataNode(node, post, requireAuthorProximity = false) {
+  function isLikelyMetadataNode(node, post) {
     if (!(node instanceof Element) || !isElementVisible(node)) return false;
 
     const nodeRect = node.getBoundingClientRect();
@@ -123,32 +151,42 @@
     const offsetFromTop = nodeRect.top - postRect.top;
     const maxOffset = Math.min(
       CONFIG.metadataMaxPixelsFromTop,
-      Math.max(120, postRect.height * CONFIG.metadataMaxFractionOfPost),
+      Math.max(130, postRect.height * CONFIG.metadataMaxFractionOfPost),
     );
 
-    if (offsetFromTop < -8 || offsetFromTop > maxOffset) return false;
-    if (!requireAuthorProximity) return true;
-
-    const heading = firstAuthorHeading(post);
-    if (!heading || !isElementVisible(heading)) return false;
-
-    const headingRect = heading.getBoundingClientRect();
-    return (
-      nodeRect.top >= headingRect.top - 24 &&
-      nodeRect.top <= headingRect.bottom + 100
-    );
+    return offsetFromTop >= -8 && offsetFromTop <= maxOffset;
   }
 
-  function candidateElements(post, selector) {
-    return Array.from(post.querySelectorAll(selector)).slice(
-      0,
-      CONFIG.maxCandidatesPerPost,
-    );
+  function rememberLabelText(id, rawText) {
+    if (!id) return;
+
+    const text = cleanText(rawText);
+    if (!text || text.length > 40) return;
+
+    if (!labelTextById.has(id) && labelTextById.size >= CONFIG.labelCacheLimit) {
+      labelTextById.delete(labelTextById.keys().next().value);
+    }
+
+    labelTextById.set(id, text);
+    debugState.cachedLabels = labelTextById.size;
+
+    if (isSponsoredLabel(text)) {
+      resolveCachedLabelReferrer(id);
+    }
   }
 
-  function referencedText(node) {
+  function cacheLabelTargets(node) {
+    if (!(node instanceof Element)) return;
+
+    if (node.id) rememberLabelText(node.id, node.textContent);
+
+    for (const element of node.querySelectorAll("[id]")) {
+      rememberLabelText(element.id, element.textContent);
+    }
+  }
+
+  function referencedLabelText(node) {
     const ids = (node.getAttribute("aria-labelledby") ?? "")
-      .trim()
       .split(/\s+/)
       .filter(Boolean);
 
@@ -156,40 +194,25 @@
 
     for (const id of ids) {
       const target = document.getElementById(id);
-      if (!target) continue;
-
-      values.push(target.getAttribute("aria-label") ?? "");
-      values.push(target.getAttribute("title") ?? "");
-      values.push(target.textContent ?? "");
+      const text = target ? cleanText(target.textContent) : labelTextById.get(id);
+      if (text) values.push(text);
     }
 
     return values;
   }
 
-  function detectAccessibilityLabel(post) {
-    const nodes = candidateElements(post, "[aria-label], [title], [aria-labelledby]");
+  function resolveCachedLabelReferrer(id) {
+    if (!id || typeof CSS === "undefined" || !CSS.escape) return;
 
-    for (const node of nodes) {
-      if (!isLikelyMetadataNode(node, post)) continue;
+    const escaped = CSS.escape(id);
+    const referrer =
+      document.querySelector(`[aria-labelledby~="${escaped}"]`) ||
+      document.querySelector(`use[*|href="#${escaped}"]`);
 
-      const ariaLabel = node.getAttribute("aria-label");
-      if (ariaLabel && isSponsoredLabel(ariaLabel)) {
-        return { reason: "accessibility-label", node, confidence: "high" };
-      }
+    if (!referrer) return;
 
-      const title = node.getAttribute("title");
-      if (title && isSponsoredLabel(title)) {
-        return { reason: "title-label", node, confidence: "high" };
-      }
-
-      for (const value of referencedText(node)) {
-        if (isSponsoredLabel(value)) {
-          return { reason: "aria-labelledby-ref", node, confidence: "high" };
-        }
-      }
-    }
-
-    return null;
+    const post = resolvePostContainer(referrer);
+    if (post) enqueuePost(post);
   }
 
   function svgReference(useElement) {
@@ -201,293 +224,310 @@
     );
   }
 
-  function detectSvgSprite(post) {
-    const uses = candidateElements(post, "svg use, use");
+  function classifyStructuredLabel(node, post) {
+    if (!(node instanceof Element)) return null;
 
-    for (const useElement of uses) {
-      const svg = useElement.closest("svg") ?? useElement;
-      if (!isLikelyMetadataNode(svg, post)) continue;
+    const ariaLabel = node.getAttribute("aria-label");
+    if (ariaLabel && /sponsored content$/i.test(cleanText(ariaLabel))) {
+      return { reason: "accessibility-sponsored-content", confidence: "high" };
+    }
 
-      const reference = svgReference(useElement);
-      if (!reference.startsWith("#") || reference.length < 2) continue;
+    if (ariaLabel && isSponsoredLabel(ariaLabel) && isLikelyMetadataNode(node, post)) {
+      return { reason: "accessibility-label", confidence: "high" };
+    }
 
-      const target = document.getElementById(reference.slice(1));
-      if (!target) continue;
+    const title = node.getAttribute("title");
+    if (title && isSponsoredLabel(title) && isLikelyMetadataNode(node, post)) {
+      return { reason: "title-label", confidence: "high" };
+    }
 
-      const accessibleValues = [
-        target.getAttribute("aria-label"),
-        target.getAttribute("title"),
-        target.textContent,
-      ];
+    if (node.tagName.toLowerCase() === "use") {
+      const ref = svgReference(node);
+      if (ref.startsWith("#") && ref.length > 1) {
+        const id = ref.slice(1);
+        const target = document.getElementById(id);
+        const text = target ? cleanText(target.textContent) : labelTextById.get(id);
 
-      if (accessibleValues.some((value) => value && isSponsoredLabel(value))) {
-        return { reason: "svg-sprite-ref", node: svg, confidence: "high" };
+        if (text && isSponsoredLabel(text)) {
+          return { reason: "svg-sprite-ref", confidence: "high" };
+        }
+      }
+    }
+
+    const labelledByValues = referencedLabelText(node);
+    if (
+      labelledByValues.some(isSponsoredLabel) &&
+      isLikelyMetadataNode(node, post)
+    ) {
+      return { reason: "aria-labelledby-ref", confidence: "high" };
+    }
+
+    if (node.tagName.toLowerCase() === "a") {
+      const href = (node.getAttribute("href") ?? "").toLocaleLowerCase();
+      if (
+        href.includes("/ads/about") ||
+        href.includes("why_am_i_seeing_this_ad")
+      ) {
+        return { reason: "ads-about-link", confidence: "high" };
       }
     }
 
     return null;
   }
 
-  function hasNearbyIdentityLink(node, post) {
-    let container = node.parentElement;
+  function collectOrderedLeaves(root, depth = 0) {
+    if (!(root instanceof Element) || depth > 4) return [];
 
-    for (let depth = 0; container && depth < 5; depth += 1) {
-      if (container === post) break;
+    const ordered = Array.from(root.childNodes).map((child, index) => {
+      let order = index;
+      let hidden = false;
 
-      const links = Array.from(container.querySelectorAll("a[href]"));
-      if (
-        links.some((link) => {
-          if (!isElementVisible(link)) return false;
-
-          const href = link.getAttribute("href") ?? "";
-          if (!href || href.startsWith("#")) return false;
-
-          const rect = link.getBoundingClientRect();
-          const nodeRect = node.getBoundingClientRect();
-
-          return (
-            Math.abs(rect.top - nodeRect.top) <= 80 &&
-            rect.width > 0 &&
-            rect.height > 0
-          );
-        })
-      ) {
-        return true;
+      if (child instanceof Element) {
+        const style = getComputedStyle(child);
+        const parsed = Number.parseInt(style.order, 10);
+        if (Number.isFinite(parsed)) order = parsed;
+        hidden =
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          Number(style.opacity) === 0;
       }
 
-      container = container.parentElement;
+      return { child, order, hidden };
+    });
+
+    ordered.sort((a, b) => a.order - b.order);
+
+    const leaves = [];
+
+    for (const entry of ordered) {
+      if (entry.hidden) continue;
+
+      const child = entry.child;
+      if (child.nodeType === Node.TEXT_NODE) {
+        leaves.push({ text: child.textContent ?? "", classCount: null });
+        continue;
+      }
+
+      if (!(child instanceof Element)) continue;
+
+      if (child.tagName === "SPAN" && child.children.length === 0) {
+        leaves.push({
+          text: child.textContent ?? "",
+          classCount: child.classList.length,
+        });
+      } else {
+        leaves.push(...collectOrderedLeaves(child, depth + 1));
+      }
+    }
+
+    return leaves;
+  }
+
+  function characterSplitVariants(root) {
+    const children = root.children;
+    if (children.length < 4 || children.length > 120) return [];
+
+    let leafish = 0;
+    for (const child of children) {
+      if (
+        child.tagName === "SPAN" &&
+        child.children.length === 0 &&
+        cleanText(child.textContent).length <= 1
+      ) {
+        leafish += 1;
+      }
+    }
+
+    if (leafish < Math.ceil(children.length * 0.65)) return [];
+
+    const leaves = collectOrderedLeaves(root);
+    if (leaves.length === 0) return [];
+
+    const assemble = (keep) =>
+      cleanText(
+        leaves
+          .filter(
+            (leaf) => leaf.classCount === null || keep(leaf.classCount),
+          )
+          .map((leaf) => leaf.text)
+          .join(""),
+      );
+
+    return [
+      assemble(() => true),
+      assemble((count) => count > 10),
+      assemble((count) => count <= 10),
+    ].filter(Boolean);
+  }
+
+  function classifyTextLabel(node, post) {
+    if (!(node instanceof Element) || !isLikelyMetadataNode(node, post)) {
+      return null;
+    }
+
+    if (node.children.length === 0) {
+      const text = cleanText(node.textContent);
+      if (text.length <= 40 && isSponsoredLabel(text)) {
+        return { reason: "visible-text", confidence: "high" };
+      }
+    }
+
+    const direct = ownText(node);
+    if (direct && direct.length <= 40 && isSponsoredLabel(direct)) {
+      return { reason: "own-text-label", confidence: "high" };
+    }
+
+    for (const variant of characterSplitVariants(node)) {
+      if (isSponsoredLabel(variant)) {
+        return { reason: "visible-text-reconstructed", confidence: "high" };
+      }
+    }
+
+    return null;
+  }
+
+  function candidateElements(post) {
+    return Array.from(post.querySelectorAll(LABEL_SELECTOR)).slice(
+      0,
+      CONFIG.maxCandidatesPerPost,
+    );
+  }
+
+  function detectLabelSignals(post) {
+    const hits = [];
+
+    for (const node of candidateElements(post)) {
+      debugState.labelElementsScanned += 1;
+
+      const structured = classifyStructuredLabel(node, post);
+      if (structured) {
+        hits.push({ ...structured, node });
+        continue;
+      }
+
+      const text = classifyTextLabel(node, post);
+      if (text) hits.push({ ...text, node });
+    }
+
+    return hits;
+  }
+
+  function linkPath(link) {
+    const href = link.getAttribute("href") ?? "";
+    if (!href || href === "#") return "";
+
+    try {
+      return new URL(href, location.origin).pathname;
+    } catch {
+      return href.replace(/^[a-z]+:\/\/[^/]*/i, "").split(/[?#]/)[0] || "/";
+    }
+  }
+
+  function hasPermalink(post) {
+    for (const link of post.querySelectorAll("a[href]")) {
+      if (PERMALINK_RE.test(linkPath(link))) return true;
+    }
+    return false;
+  }
+
+  function isOutboundLink(link) {
+    const href = link.getAttribute("href") ?? "";
+    if (!href || href.startsWith("#")) return false;
+
+    if (linkPath(link) === "/l.php") return true;
+
+    try {
+      const url = new URL(href, location.origin);
+      return !/(^|\.)facebook\.com$/i.test(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function hasOutboundLink(post) {
+    return Array.from(post.querySelectorAll("a[href]")).some(isOutboundLink);
+  }
+
+  function hasDanglingLabelReference(post) {
+    for (const element of post.querySelectorAll("[aria-labelledby]")) {
+      const ids = (element.getAttribute("aria-labelledby") ?? "")
+        .split(/\s+/)
+        .filter(Boolean);
+
+      for (const id of ids) {
+        const target = document.getElementById(id);
+        const cached = labelTextById.get(id);
+        const text = target ? cleanText(target.textContent) : cached;
+
+        if (!text) return true;
+      }
     }
 
     return false;
   }
 
-  function isLikelyShortAdMetadataNode(node, post) {
-    if (!(node instanceof Element) || !isElementVisible(node)) return false;
-
-    const nodeRect = node.getBoundingClientRect();
-    const postRect = post.getBoundingClientRect();
-    if (postRect.width <= 0 || postRect.height <= 0) return false;
-
-    const offsetFromTop = nodeRect.top - postRect.top;
-
-    // Facebook currently renders the short "Ad" label directly below/next to
-    // the advertiser identity. Keep this detector intentionally narrow so a
-    // body-text occurrence of "ad" cannot hide a normal post.
-    if (offsetFromTop < -8 || offsetFromTop > 125) return false;
-    if (nodeRect.left < postRect.left - 8 || nodeRect.right > postRect.right + 8) {
-      return false;
-    }
-
-    return hasNearbyIdentityLink(node, post);
-  }
-
-  function detectVisibleExactText(post) {
-    const nodes = candidateElements(post, "span, a, div[role='button']");
-
-    for (const node of nodes) {
-      if (node.children.length > 0) continue;
-
-      const text = node.textContent ?? "";
-
-      if (
-        text.length <= 32 &&
-        isLikelyMetadataNode(node, post, true) &&
-        isSponsoredLabel(text)
-      ) {
-        return { reason: "visible-text", node, confidence: "high" };
-      }
-
-      if (
-        text.length <= 8 &&
-        isShortVisibleAdLabel(text) &&
-        isLikelyShortAdMetadataNode(node, post)
-      ) {
-        return { reason: "visible-short-ad-label", node, confidence: "high" };
-      }
-    }
-
-    return null;
-  }
-
-  function isCharacterSplitCandidate(root) {
-    const children = Array.from(root.children);
-    if (children.length < 4 || children.length > 24) return false;
-
-    const leafSpans = children.filter((child) => {
-      if (!(child instanceof HTMLElement) || child.tagName !== "SPAN") return false;
-      if (child.childElementCount !== 0) return false;
-
-      const normalized = normalizeLabel(child.textContent ?? "");
-      return normalized.length <= 2;
-    });
-
-    return leafSpans.length >= Math.ceil(children.length * 0.7);
-  }
-
-  function orderedCharacterEntries(root) {
-    const entries = [];
-
-    for (const child of root.children) {
-      if (!(child instanceof HTMLElement) || child.tagName !== "SPAN") continue;
-      if (child.childElementCount !== 0 || !isElementVisible(child)) continue;
-
-      const text = normalizeLabel(child.textContent ?? "");
-      if (text.length !== 1) continue;
-
-      const style = getComputedStyle(child);
-      const order = Number.parseFloat(style.order);
-      const rect = child.getBoundingClientRect();
-
-      entries.push({
-        text,
-        order: Number.isFinite(order) ? order : 0,
-        left: rect.left,
-        classCount: child.classList.length,
-      });
-    }
-
-    const hasDistinctOrder = new Set(entries.map((entry) => entry.order)).size > 1;
-
-    entries.sort((a, b) => {
-      if (hasDistinctOrder && a.order !== b.order) return a.order - b.order;
-      return a.left - b.left;
-    });
-
-    return entries;
-  }
-
-  function characterSplitVariants(root) {
-    if (!isCharacterSplitCandidate(root)) return [];
-
-    const entries = orderedCharacterEntries(root);
-    if (entries.length < 4) return [];
-
-    const variants = [entries.map((entry) => entry.text).join("")];
-    const byClassCount = new Map();
-
-    for (const entry of entries) {
-      const bucket = byClassCount.get(entry.classCount) ?? [];
-      bucket.push(entry.text);
-      byClassCount.set(entry.classCount, bucket);
-    }
-
-    for (const chars of byClassCount.values()) {
-      if (chars.length >= 6) variants.push(chars.join(""));
-    }
-
-    return [...new Set(variants)];
-  }
-
-  function detectReconstructedVisibleText(post) {
-    const nodes = candidateElements(post, "span, a");
-
-    for (const node of nodes) {
-      if (!isLikelyMetadataNode(node, post, true)) continue;
-
-      const variants = characterSplitVariants(node);
-      if (variants.some(isSponsoredLabel)) {
-        return {
-          reason: "visible-text-reconstructed",
-          node,
-          confidence: "high",
-        };
-      }
-    }
-
-    return null;
-  }
-
-
-  function isAdsAboutHref(value) {
-    const href = String(value ?? "").toLocaleLowerCase();
-    return (
-      href.includes("/ads/about") ||
-      href.includes("facebook.com/ads/about") ||
-      href.includes("why_am_i_seeing_this_ad")
+  function hasAdRoleShape(post) {
+    return Boolean(
+      post.querySelector('[data-ad-rendering-role="profile_name"]') &&
+        post.querySelector('[data-ad-rendering-role="story_message"]') &&
+        post.querySelector('[data-ad-rendering-role^="cta-"]'),
     );
   }
 
-  function detectAdsAboutLink(post) {
-    const links = Array.from(post.querySelectorAll("a[href]"));
+  function looksLikePost(post) {
+    const text = cleanText(post.textContent);
+    if (text.length < 40) return false;
 
-    for (const link of links) {
-      const rawHref = link.getAttribute("href") ?? "";
-      const resolvedHref = link.href ?? "";
-
-      if (!isAdsAboutHref(rawHref) && !isAdsAboutHref(resolvedHref)) continue;
-
-      return {
-        reason: "ads-about-link",
-        node: link,
-        confidence: "high",
-      };
+    let storyLinks = 0;
+    for (const link of post.querySelectorAll('a[href*="/stories/"]')) {
+      storyLinks += 1;
+      if (storyLinks > 1) return false;
     }
 
-    return null;
+    return true;
   }
 
-  function scanAdsAboutLinks(root = document) {
-    if (!(root instanceof Document || root instanceof Element)) return;
+  function detectUnlabeledShape(post) {
+    if (!looksLikePost(post)) return null;
+    if (hasPermalink(post)) return null;
 
-    const links = root.querySelectorAll("a[href]");
-    let seen = 0;
-    let resolved = 0;
-    let unresolved = 0;
+    const dangling = hasDanglingLabelReference(post);
+    const outbound = hasOutboundLink(post);
+    const roleShape = hasAdRoleShape(post);
 
-    for (const link of links) {
-      const rawHref = link.getAttribute("href") ?? "";
-      const resolvedHref = link.href ?? "";
+    if (dangling) debugState.danglingCandidates += 1;
+    if (outbound) debugState.outboundCandidates += 1;
+    if (roleShape) debugState.roleShapeCandidates += 1;
 
-      if (!isAdsAboutHref(rawHref) && !isAdsAboutHref(resolvedHref)) continue;
+    if (!dangling && !outbound && !roleShape) return null;
 
-      seen += 1;
+    const reasons = [];
+    if (dangling) reasons.push("dangling-label-no-permalink");
+    if (outbound) reasons.push("outbound-no-permalink");
+    if (roleShape) reasons.push("ad-role-shape");
 
-      const post = resolvePostContainer(link);
-      if (!post) {
-        unresolved += 1;
-        continue;
-      }
-
-      resolved += 1;
-
-      markDetected(post, {
-        confidence: "high",
-        reasons: ["ads-about-link"],
-        nodes: [link],
-      });
-    }
-
-    debugState.adLinksSeen = Math.max(debugState.adLinksSeen, seen);
-    debugState.adLinksResolved = Math.max(debugState.adLinksResolved, resolved);
-    debugState.adLinksUnresolved = Math.max(debugState.adLinksUnresolved, unresolved);
-    updateDebugBadge();
+    return {
+      reasons,
+      confidence:
+        (dangling && outbound) || (outbound && roleShape) ? "high" : "medium",
+      nodes: [post],
+    };
   }
-
-  const detectors = [
-    detectAdsAboutLink,
-    detectSvgSprite,
-    detectAccessibilityLabel,
-    detectVisibleExactText,
-    detectReconstructedVisibleText,
-  ];
 
   function detectSponsored(post) {
     if (!isFeedPost(post)) return null;
 
-    const hits = [];
+    const labelHits = detectLabelSignals(post);
 
-    for (const detector of detectors) {
-      const hit = detector(post);
-      if (hit) hits.push(hit);
+    if (labelHits.length > 0) {
+      return {
+        confidence: "high",
+        reasons: [...new Set(labelHits.map((hit) => hit.reason))],
+        nodes: labelHits.map((hit) => hit.node),
+      };
     }
 
-    if (hits.length === 0) return null;
-
-    return {
-      confidence: "high",
-      reasons: [...new Set(hits.map((hit) => hit.reason))],
-      nodes: hits.map((hit) => hit.node),
-    };
+    return detectUnlabeledShape(post);
   }
 
   function updateDebugBadge() {
@@ -501,18 +541,30 @@
     }
 
     const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
-    const detected = document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
+    const detected = document.querySelectorAll(
+      `[${DETECTED_ATTR}="true"]`,
+    ).length;
+
+    debugState.scanned = scanned;
+    debugState.hits = detected;
+
     badge.textContent =
-      `fbok 0.1.7 · scanned ${scanned} · hits ${detected}` +
-      ` · adlinks ${debugState.adLinksSeen}` +
-      ` · resolved ${debugState.adLinksResolved}` +
-      ` · unresolved ${debugState.adLinksUnresolved}`;
+      `fbok ${VERSION} · scanned ${scanned} · hits ${detected}` +
+      ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
+      ` · cache ${debugState.cachedLabels}`;
   }
 
   function markDetected(post, detection) {
+    const wasDetected = post.getAttribute(DETECTED_ATTR) === "true";
+
     post.setAttribute(DETECTED_ATTR, "true");
     post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
     post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
+
+    if (!wasDetected) {
+      if (detection.confidence === "high") debugState.highHits += 1;
+      else debugState.mediumHits += 1;
+    }
 
     if (CONFIG.debug) {
       console.debug("[fbok] Sponsored post candidate", {
@@ -520,19 +572,20 @@
         confidence: detection.confidence,
         post,
       });
-      updateDebugBadge();
     }
+
+    updateDebugBadge();
   }
 
   function inspectPost(post) {
     if (!(post instanceof Element) || !isFeedPost(post)) return;
 
     post.setAttribute(SEEN_ATTR, "true");
-    updateDebugBadge();
-    if (post.getAttribute(DETECTED_ATTR) === "true") return;
 
     const detection = detectSponsored(post);
     if (detection) markDetected(post, detection);
+
+    updateDebugBadge();
   }
 
   function enqueuePost(post) {
@@ -570,8 +623,6 @@
   }
 
   function scanExistingFeed() {
-    scanAdsAboutLinks(document);
-
     for (const post of document.querySelectorAll(POST_SELECTOR)) {
       if (isFeedPost(post)) enqueuePost(post);
     }
@@ -579,36 +630,44 @@
 
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
-      if (mutation.target instanceof Element) {
-        const changedPost = resolvePostContainer(mutation.target);
-        if (changedPost) enqueuePost(changedPost);
+      for (const removedNode of mutation.removedNodes) {
+        if (removedNode instanceof Element) cacheLabelTargets(removedNode);
       }
 
       for (const addedNode of mutation.addedNodes) {
         if (addedNode instanceof Element) {
-          scanAdsAboutLinks(addedNode);
+          cacheLabelTargets(addedNode);
+          enqueueFromNode(addedNode);
         }
-        enqueueFromNode(addedNode);
+      }
+
+      if (mutation.target instanceof Element) {
+        const changedPost = resolvePostContainer(mutation.target);
+        if (changedPost) enqueuePost(changedPost);
       }
     }
   });
 
   function start() {
+    cacheLabelTargets(document.documentElement);
     scanExistingFeed();
 
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
+      characterData: true,
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.7",
+      version: VERSION,
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
       },
       detectedCount() {
-        return document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
+        return document.querySelectorAll(
+          `[${DETECTED_ATTR}="true"]`,
+        ).length;
       },
       detectedPosts() {
         return Array.from(
@@ -622,15 +681,16 @@
       diagnostics() {
         return {
           ...debugState,
-          scanned: document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length,
-          detected: document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length,
+          cachedLabels: labelTextById.size,
         };
       },
     });
 
     if (CONFIG.debug) {
-      console.debug("[fbok] v0.1.1 debug detector active");
+      console.debug(`[fbok] v${VERSION} research-aligned detector active`);
     }
+
+    updateDebugBadge();
   }
 
   start();

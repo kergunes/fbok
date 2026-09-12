@@ -29,11 +29,14 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 
 ## v0.1
 
+v0.1.8 refactors detection around findings from maintained Facebook-specific blockers: ephemeral accessibility labels are cached, SVG/ARIA references are followed, and unlabeled ads can be flagged by conservative shape heuristics. Shape-only detections remain debug-only until false-positive testing is complete. See [`docs/research-notes.md`](docs/research-notes.md).
+
+
 Mevcut sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlemez.
 
 - Sponsored adayını outline ile işaretler
 - Detection reason gösterir
-- Debug modunda sayfanın sol altında `scanned / hits / adlinks / resolved / unresolved` teşhis sayaçları gösterir
+- Debug modunda sayfanın sol altında `scanned / hits / high-vs-medium / cached-label` teşhis sayaçları gösterir
 - İncelenen postları ayrıca işaretleyerek scan/detection ayrımını görünür kılar
 - İngilizce `Sponsored`, Türkçe `Sponsorlu` ve güncel kısa `Ad` etiketlerini tanır
 - Infinite scroll / dinamik DOM değişikliklerini izler
