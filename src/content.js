@@ -3,15 +3,17 @@
 
   const CONFIG = Object.freeze({
     debug: true,
-    maxCandidatesPerPost: 240,
-    metadataMaxPixelsFromTop: 220,
-    metadataMaxFractionOfPost: 0.35,
+    maxCandidatesPerPost: 260,
+    metadataMaxPixelsFromTop: 240,
+    metadataMaxFractionOfPost: 0.38,
   });
 
   const LABELS = new Set(["sponsored", "sponsorlu"]);
+  const POST_SELECTOR = '[aria-posinset], [role="article"], article';
   const DETECTED_ATTR = "data-fbok-detected";
   const REASON_ATTR = "data-fbok-reason";
   const CONFIDENCE_ATTR = "data-fbok-confidence";
+  const SEEN_ATTR = "data-fbok-seen";
 
   const pendingPosts = new Set();
   let flushScheduled = false;
@@ -45,25 +47,56 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  function isFeedPost(post) {
-    if (!(post instanceof Element)) return false;
+  function isTopLevelPositionedItem(post) {
+    if (!post.hasAttribute("aria-posinset")) return false;
+
+    const position = Number.parseInt(post.getAttribute("aria-posinset") ?? "", 10);
+    if (!Number.isFinite(position) || position < 1) return false;
+
+    const positionedAncestor = post.parentElement?.closest("[aria-posinset]");
+    if (positionedAncestor) return false;
+
+    if (!post.closest('[role="main"]')) return false;
+    if (post.closest('[role="dialog"], [role="navigation"], [role="complementary"]')) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function isLegacyFeedArticle(post) {
     if (!(post.matches('[role="article"]') || post.matches("article"))) return false;
     return Boolean(post.closest('[role="feed"]'));
+  }
+
+  function isFeedPost(post) {
+    if (!(post instanceof Element)) return false;
+    return isTopLevelPositionedItem(post) || isLegacyFeedArticle(post);
   }
 
   function resolvePostContainer(node) {
     if (!(node instanceof Element)) return null;
 
-    const post = node.closest('[role="article"], article');
-    return post && isFeedPost(post) ? post : null;
+    let candidate = node.closest(POST_SELECTOR);
+    while (candidate) {
+      if (isFeedPost(candidate)) return candidate;
+      candidate = candidate.parentElement?.closest(POST_SELECTOR) ?? null;
+    }
+
+    return null;
   }
 
-  function isLikelyMetadataNode(node, post) {
+  function firstAuthorHeading(post) {
+    return post.querySelector(
+      'h1, h2, h3, h4, [role="heading"][aria-level="1"], [role="heading"][aria-level="2"], [role="heading"][aria-level="3"], [role="heading"][aria-level="4"]',
+    );
+  }
+
+  function isLikelyMetadataNode(node, post, requireAuthorProximity = false) {
     if (!(node instanceof Element) || !isElementVisible(node)) return false;
 
     const nodeRect = node.getBoundingClientRect();
     const postRect = post.getBoundingClientRect();
-
     if (postRect.width <= 0 || postRect.height <= 0) return false;
 
     const offsetFromTop = nodeRect.top - postRect.top;
@@ -72,34 +105,17 @@
       Math.max(120, postRect.height * CONFIG.metadataMaxFractionOfPost),
     );
 
-    return offsetFromTop >= -8 && offsetFromTop <= maxOffset;
-  }
+    if (offsetFromTop < -8 || offsetFromTop > maxOffset) return false;
+    if (!requireAuthorProximity) return true;
 
-  function collectVisibleText(root) {
-    if (!(root instanceof Element)) return "";
+    const heading = firstAuthorHeading(post);
+    if (!heading || !isElementVisible(heading)) return false;
 
-    let result = "";
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(textNode) {
-        const parent = textNode.parentElement;
-        if (!parent) return NodeFilter.FILTER_REJECT;
-        if (["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        return isElementVisible(parent)
-          ? NodeFilter.FILTER_ACCEPT
-          : NodeFilter.FILTER_REJECT;
-      },
-    });
-
-    let node;
-    while ((node = walker.nextNode())) {
-      result += node.textContent ?? "";
-      if (result.length > 80) break;
-    }
-
-    return result;
+    const headingRect = heading.getBoundingClientRect();
+    return (
+      nodeRect.top >= headingRect.top - 24 &&
+      nodeRect.top <= headingRect.bottom + 100
+    );
   }
 
   function candidateElements(post, selector) {
@@ -109,8 +125,28 @@
     );
   }
 
+  function referencedText(node) {
+    const ids = (node.getAttribute("aria-labelledby") ?? "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const values = [];
+
+    for (const id of ids) {
+      const target = document.getElementById(id);
+      if (!target) continue;
+
+      values.push(target.getAttribute("aria-label") ?? "");
+      values.push(target.getAttribute("title") ?? "");
+      values.push(target.textContent ?? "");
+    }
+
+    return values;
+  }
+
   function detectAccessibilityLabel(post) {
-    const nodes = candidateElements(post, "[aria-label], [title]");
+    const nodes = candidateElements(post, "[aria-label], [title], [aria-labelledby]");
 
     for (const node of nodes) {
       if (!isLikelyMetadataNode(node, post)) continue;
@@ -124,27 +160,47 @@
       if (title && isSponsoredLabel(title)) {
         return { reason: "title-label", node, confidence: "high" };
       }
+
+      for (const value of referencedText(node)) {
+        if (isSponsoredLabel(value)) {
+          return { reason: "aria-labelledby-ref", node, confidence: "high" };
+        }
+      }
     }
 
     return null;
   }
 
-  function detectSvgAccessibility(post) {
-    const nodes = candidateElements(
-      post,
-      'svg[aria-label], [role="img"][aria-label], svg title',
+  function svgReference(useElement) {
+    return (
+      useElement.getAttribute("href") ||
+      useElement.getAttribute("xlink:href") ||
+      useElement.getAttributeNS("http://www.w3.org/1999/xlink", "href") ||
+      ""
     );
+  }
 
-    for (const node of nodes) {
-      const signalNode = node.matches("title") ? node.parentElement : node;
-      if (!signalNode || !isLikelyMetadataNode(signalNode, post)) continue;
+  function detectSvgSprite(post) {
+    const uses = candidateElements(post, "svg use, use");
 
-      const value = node.matches("title")
-        ? node.textContent
-        : node.getAttribute("aria-label");
+    for (const useElement of uses) {
+      const svg = useElement.closest("svg") ?? useElement;
+      if (!isLikelyMetadataNode(svg, post)) continue;
 
-      if (value && isSponsoredLabel(value)) {
-        return { reason: "svg-accessibility", node: signalNode, confidence: "high" };
+      const reference = svgReference(useElement);
+      if (!reference.startsWith("#") || reference.length < 2) continue;
+
+      const target = document.getElementById(reference.slice(1));
+      if (!target) continue;
+
+      const accessibleValues = [
+        target.getAttribute("aria-label"),
+        target.getAttribute("title"),
+        target.textContent,
+      ];
+
+      if (accessibleValues.some((value) => value && isSponsoredLabel(value))) {
+        return { reason: "svg-sprite-ref", node: svg, confidence: "high" };
       }
     }
 
@@ -156,7 +212,7 @@
 
     for (const node of nodes) {
       if (node.children.length > 0) continue;
-      if (!isLikelyMetadataNode(node, post)) continue;
+      if (!isLikelyMetadataNode(node, post, true)) continue;
 
       const text = node.textContent ?? "";
       if (text.length <= 32 && isSponsoredLabel(text)) {
@@ -167,18 +223,83 @@
     return null;
   }
 
+  function isCharacterSplitCandidate(root) {
+    const children = Array.from(root.children);
+    if (children.length < 4 || children.length > 24) return false;
+
+    const leafSpans = children.filter((child) => {
+      if (!(child instanceof HTMLElement) || child.tagName !== "SPAN") return false;
+      if (child.childElementCount !== 0) return false;
+
+      const normalized = normalizeLabel(child.textContent ?? "");
+      return normalized.length <= 2;
+    });
+
+    return leafSpans.length >= Math.ceil(children.length * 0.7);
+  }
+
+  function orderedCharacterEntries(root) {
+    const entries = [];
+
+    for (const child of root.children) {
+      if (!(child instanceof HTMLElement) || child.tagName !== "SPAN") continue;
+      if (child.childElementCount !== 0 || !isElementVisible(child)) continue;
+
+      const text = normalizeLabel(child.textContent ?? "");
+      if (text.length !== 1) continue;
+
+      const style = getComputedStyle(child);
+      const order = Number.parseFloat(style.order);
+      const rect = child.getBoundingClientRect();
+
+      entries.push({
+        text,
+        order: Number.isFinite(order) ? order : 0,
+        left: rect.left,
+        classCount: child.classList.length,
+      });
+    }
+
+    const hasDistinctOrder = new Set(entries.map((entry) => entry.order)).size > 1;
+
+    entries.sort((a, b) => {
+      if (hasDistinctOrder && a.order !== b.order) return a.order - b.order;
+      return a.left - b.left;
+    });
+
+    return entries;
+  }
+
+  function characterSplitVariants(root) {
+    if (!isCharacterSplitCandidate(root)) return [];
+
+    const entries = orderedCharacterEntries(root);
+    if (entries.length < 4) return [];
+
+    const variants = [entries.map((entry) => entry.text).join("")];
+    const byClassCount = new Map();
+
+    for (const entry of entries) {
+      const bucket = byClassCount.get(entry.classCount) ?? [];
+      bucket.push(entry.text);
+      byClassCount.set(entry.classCount, bucket);
+    }
+
+    for (const chars of byClassCount.values()) {
+      if (chars.length >= 6) variants.push(chars.join(""));
+    }
+
+    return [...new Set(variants)];
+  }
+
   function detectReconstructedVisibleText(post) {
-    const nodes = candidateElements(post, "span, a, div[role='button']");
+    const nodes = candidateElements(post, "span, a");
 
     for (const node of nodes) {
-      if (node.children.length === 0) continue;
-      if (!isLikelyMetadataNode(node, post)) continue;
+      if (!isLikelyMetadataNode(node, post, true)) continue;
 
-      const rawText = node.textContent ?? "";
-      if (rawText.length > 96) continue;
-
-      const visibleText = collectVisibleText(node);
-      if (visibleText.length <= 48 && isSponsoredLabel(visibleText)) {
+      const variants = characterSplitVariants(node);
+      if (variants.some(isSponsoredLabel)) {
         return {
           reason: "visible-text-reconstructed",
           node,
@@ -191,8 +312,8 @@
   }
 
   const detectors = [
+    detectSvgSprite,
     detectAccessibilityLabel,
-    detectSvgAccessibility,
     detectVisibleExactText,
     detectReconstructedVisibleText,
   ];
@@ -217,8 +338,6 @@
   }
 
   function markDetected(post, detection) {
-    if (post.getAttribute(DETECTED_ATTR) === "true") return;
-
     post.setAttribute(DETECTED_ATTR, "true");
     post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
     post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
@@ -233,7 +352,9 @@
   }
 
   function inspectPost(post) {
-    if (!(post instanceof Element)) return;
+    if (!(post instanceof Element) || !isFeedPost(post)) return;
+
+    post.setAttribute(SEEN_ATTR, "true");
     if (post.getAttribute(DETECTED_ATTR) === "true") return;
 
     const detection = detectSponsored(post);
@@ -262,21 +383,21 @@
   function enqueueFromNode(node) {
     if (!(node instanceof Element)) return;
 
+    if (node.matches(POST_SELECTOR) && isFeedPost(node)) {
+      enqueuePost(node);
+    }
+
     const ownPost = resolvePostContainer(node);
     if (ownPost) enqueuePost(ownPost);
 
-    for (const post of node.querySelectorAll(
-      '[role="feed"] [role="article"], [role="feed"] article',
-    )) {
-      enqueuePost(post);
+    for (const post of node.querySelectorAll(POST_SELECTOR)) {
+      if (isFeedPost(post)) enqueuePost(post);
     }
   }
 
   function scanExistingFeed() {
-    for (const post of document.querySelectorAll(
-      '[role="feed"] [role="article"], [role="feed"] article',
-    )) {
-      enqueuePost(post);
+    for (const post of document.querySelectorAll(POST_SELECTOR)) {
+      if (isFeedPost(post)) enqueuePost(post);
     }
   }
 
@@ -302,8 +423,11 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.0",
+      version: "0.1.1",
       rescan: scanExistingFeed,
+      scannedCount() {
+        return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
+      },
       detectedCount() {
         return document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
       },
@@ -319,7 +443,7 @@
     });
 
     if (CONFIG.debug) {
-      console.debug("[fbok] v0.1 debug detector active");
+      console.debug("[fbok] v0.1.1 debug detector active");
     }
   }
 

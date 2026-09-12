@@ -18,20 +18,22 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - Facebook sayfalarında çalışan content script
 - Dinamik/infinite feed değişikliklerini izlemek için `MutationObserver`
 - Birbirinden bağımsız birden fazla sponsored-post detection yöntemi
-- SVG ve accessibility/ARIA label detection
-- Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini DOM parçalarından yeniden oluşturma
-- Tespit edilen işaretten doğru feed post container'ına yükselme
+- `aria-label` / `aria-labelledby` accessibility detection
+- Chromium'daki SVG `<use href="#…">` sprite referanslarını çözme
+- Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini CSS sırasına göre yeniden oluşturma
+- Güncel `aria-posinset` feed container'ları + eski semantic article fallback'i
 - **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
 
 ## v0.1
 
-İlk çalışan sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlemez.
+Mevcut sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlemez.
 
 - Sponsored adayını outline ile işaretler
 - Detection reason gösterir
+- İncelenen postları ayrıca işaretleyerek scan/detection ayrımını görünür kılar
 - İngilizce `Sponsored` ve Türkçe `Sponsorlu` etiketlerini tanır
-- Yalnızca semantik Facebook feed postları içinde işlem yapar
 - Infinite scroll / dinamik DOM değişikliklerini izler
+- GitHub Actions ile manifest ve JavaScript syntax doğrulaması yapar
 
 Manuel doğrulama adımları için [`docs/manual-test.md`](docs/manual-test.md) dosyasına bak.
 
@@ -42,6 +44,14 @@ Manuel doğrulama adımları için [`docs/manual-test.md`](docs/manual-test.md) 
 3. **Developer mode**'u etkinleştir.
 4. **Load unpacked** ile repo klasörünü seç.
 5. Facebook'u aç veya yenile.
+
+### Validation
+
+```bash
+npm test
+```
+
+Harici runtime dependency yoktur.
 
 ## Daha sonraki hedefler
 

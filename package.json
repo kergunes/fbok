@@ -1,0 +1,12 @@
+{
+  "name": "fbok",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Facebook-specific sponsored-post detector for Chromium browsers.",
+  "scripts": {
+    "test": "node scripts/validate.mjs && node --check src/content.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

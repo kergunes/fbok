@@ -12,16 +12,20 @@ v0.1 deliberately **does not hide posts**. It only highlights high-confidence Sp
 
 ## Expected behavior
 
-A detected sponsored post receives a red outline and an `fbok · <reason>` badge. The current reasons are:
+A detected sponsored post receives a red outline and an `fbok · <reason>` badge. Current reasons include:
 
+- `svg-sprite-ref`
 - `accessibility-label`
 - `title-label`
-- `svg-accessibility`
+- `aria-labelledby-ref`
 - `visible-text`
 - `visible-text-reconstructed`
 
-DevTools also exposes `window.__fbokDebug`:
+Each inspected feed post also receives `data-fbok-seen="true"`. This separates "the detector scanned it and did not match" from "the scanner never reached it."
 
+The content script exposes `window.__fbokDebug` in the extension's isolated DevTools execution context:
+
+- `__fbokDebug.scannedCount()`
 - `__fbokDebug.detectedCount()`
 - `__fbokDebug.detectedPosts()`
 - `__fbokDebug.rescan()`
@@ -33,8 +37,10 @@ These must **not** be highlighted:
 - A normal post whose body text contains the word "Sponsored".
 - A comment containing "Sponsored" or "Sponsorlu".
 - A normal post linking to an article that contains either word.
-- UI outside the main `role="feed"`.
-- Posts where a detector cannot resolve a semantic feed article container.
+- A normal post whose timestamp is rendered through an SVG sprite.
+- UI outside the main feed.
+- Nested list items inside a post.
+- Posts where a signal cannot be resolved to a top-level feed container.
 
 ## Coverage checks
 
@@ -42,6 +48,8 @@ Verify at least:
 
 - English Facebook UI: `Sponsored`.
 - Turkish Facebook UI: `Sponsorlu`.
+- Chromium SVG-sprite sponsored labels.
+- Obfuscated / character-split sponsored labels.
 - Infinite scroll after several batches of posts.
 - Posts inserted after SPA navigation without a full refresh.
 - Light and dark Facebook themes.
