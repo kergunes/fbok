@@ -40,7 +40,7 @@ These must **not** be highlighted:
 - A normal post whose timestamp is rendered through an SVG sprite.
 - UI outside the main feed.
 - Nested list items inside a post.
-- Posts where a signal cannot be resolved to a top-level feed container.
+- Posts where a signal cannot be resolved to a top-level feed container.\n- `data-pagelet=\"FeedUnit…\"` fallback'iyle yakalanan feed postları.
 
 ## Coverage checks
 

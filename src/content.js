@@ -9,7 +9,7 @@
   });
 
   const LABELS = new Set(["sponsored", "sponsorlu"]);
-  const POST_SELECTOR = '[aria-posinset], [role="article"], article';
+  const POST_SELECTOR = '[data-pagelet^="FeedUnit"], [aria-posinset], [role="article"], article';
   const DETECTED_ATTR = "data-fbok-detected";
   const REASON_ATTR = "data-fbok-reason";
   const CONFIDENCE_ATTR = "data-fbok-confidence";
@@ -64,6 +64,12 @@
     return true;
   }
 
+  function isPageletFeedUnit(post) {
+    if (!post.matches('[data-pagelet^="FeedUnit"]')) return false;
+    if (!post.closest('[role="main"]')) return false;
+    return !post.closest('[role="dialog"], [role="complementary"]');
+  }
+
   function isLegacyFeedArticle(post) {
     if (!(post.matches('[role="article"]') || post.matches("article"))) return false;
     return Boolean(post.closest('[role="feed"]'));
@@ -71,7 +77,11 @@
 
   function isFeedPost(post) {
     if (!(post instanceof Element)) return false;
-    return isTopLevelPositionedItem(post) || isLegacyFeedArticle(post);
+    return (
+      isPageletFeedUnit(post) ||
+      isTopLevelPositionedItem(post) ||
+      isLegacyFeedArticle(post)
+    );
   }
 
   function resolvePostContainer(node) {
@@ -423,7 +433,7 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.1",
+      version: "0.1.2",
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;

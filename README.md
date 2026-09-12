@@ -21,7 +21,7 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - `aria-label` / `aria-labelledby` accessibility detection
 - Chromium'daki SVG `<use href="#…">` sprite referanslarını çözme
 - Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini CSS sırasına göre yeniden oluşturma
-- Güncel `aria-posinset` feed container'ları + eski semantic article fallback'i
+- Güncel `aria-posinset` feed container'ları + `FeedUnit`/semantic article fallback'leri
 - **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
 
 ## v0.1
