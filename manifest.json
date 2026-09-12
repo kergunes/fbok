@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fbok",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Highlights likely Sponsored / Sponsorlu posts in the Facebook feed for safe debugging.",
   "host_permissions": [
     "https://facebook.com/*",

@@ -16,6 +16,8 @@
 - [x] Manual test checklist
 - [x] GitHub Actions validation
 - [ ] Real Facebook feed validation in Chrome/Brave
+  - [x] First real-world miss captured: Logitech feed ad labeled `Ad`
+  - [x] Added strict visible `Ad` header detection in v0.1.3
 - [ ] False-positive / false-negative test pass
 - [ ] Tune detectors from real DOM captures
 

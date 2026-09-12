@@ -20,6 +20,7 @@ A detected sponsored post receives a red outline and an `fbok · <reason>` badge
 - `aria-labelledby-ref`
 - `visible-text`
 - `visible-text-reconstructed`
+- `visible-short-ad-label`
 
 Each inspected feed post also receives `data-fbok-seen="true"`. This separates "the detector scanned it and did not match" from "the scanner never reached it."
 
@@ -47,6 +48,7 @@ These must **not** be highlighted:
 Verify at least:
 
 - English Facebook UI: `Sponsored`.
+- English Facebook UI variant: short `Ad` label directly under/near the advertiser name.
 - Turkish Facebook UI: `Sponsorlu`.
 - Chromium SVG-sprite sponsored labels.
 - Obfuscated / character-split sponsored labels.
