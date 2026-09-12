@@ -1,33 +1,93 @@
 # v0.5.1 manual test checklist
 
-v0.5.1 locks medium-confidence hiding on. The suggested-post filter is controlled from the fbok toolbar popup. The right-column Sponsored module is hidden separately. Nested label scans are coalesced per animation frame to reduce feed overhead.
+This checklist validates the current live behavior of fbok. Automated CI currently checks repository/manifest integrity and JavaScript syntax; it does not replace real Facebook feed testing.
 
 ## Setup
 
 1. `git pull`
 2. Open `brave://extensions` or `chrome://extensions`.
 3. Reload fbok and verify version `0.5.1`.
-4. Hard refresh Facebook.
-5. Scroll until several normal posts and at least one feed ad are visible.
+4. Hard-refresh Facebook.
+5. Keep the normal Facebook feed open and scroll through a meaningful sample.
 
 ## Expected behavior
 
-- **High-confidence ad** = disappears from the feed.
-- Medium-confidence candidates are hidden; use the on-page `Reveal blocked #N` button to inspect one.
-- No outline = no current match.
-- Facebook must keep scrolling/loading normally.
+### Feed
 
-The bottom-left badge includes:
+- High-confidence ad cards are hidden.
+- Medium-confidence candidates are hidden by current product policy.
+- Hidden connected cards can be audited with `Reveal blocked #N`.
+- Revealing a card must not change the historical blocked count.
+- Facebook infinite scroll must continue to load normally.
+
+### Suggested-post toggle
+
+Open the fbok toolbar popup.
+
+When **Hide suggested posts** is enabled:
+- explicit `Suggested for you` / `Senin için önerilen` cards may be hidden;
+- detected Follow/Takip et or group Join/Katıl recommendation cards may be hidden.
+
+When disabled:
+- suggested-only detections should be cleared;
+- ad filtering should remain active.
+
+### Right rail
+
+- The right-column Sponsored module should be hidden.
+- Contacts / Kişiler and unrelated right-column modules must remain usable.
+
+## Debug badge
+
+The bottom-left badge includes values similar to:
 
 `fbok 0.5.1 · scanned N · hits N · H/M N/N · blocked N · cache N · late/rescue N/N · retry N`
 
-A hidden high-confidence post still remains inspectable through:
+The important distinction is:
 
-`__fbokDebug.detectedPosts()`
+- `hits` = classified DOM cards;
+- `H/M` = high vs medium classification counts;
+- `blocked` = cards that entered blocking policy;
+- `currentlyHidden` is available through diagnostics and reflects reveal state.
 
-## High-confidence reasons
+## Blocked-card report
 
-Existing direct signals:
+From Facebook's normal DevTools console:
+
+```js
+document.addEventListener(
+  "fbok-debug-response",
+  (event) => console.log(event.detail),
+  { once: true },
+);
+
+document.dispatchEvent(
+  new CustomEvent("fbok-debug-request", {
+    detail: { action: "blockedPosts" },
+  }),
+);
+```
+
+For diagnostics:
+
+```js
+document.addEventListener(
+  "fbok-debug-response",
+  (event) => console.log(event.detail),
+  { once: true },
+);
+
+document.dispatchEvent(
+  new CustomEvent("fbok-debug-request", {
+    detail: { action: "diagnostics" },
+  }),
+);
+```
+
+## High-confidence evidence to watch
+
+Common reasons include:
+
 - `react-feed-category-sponsored`
 - `accessibility-sponsored-content`
 - `accessibility-label`
@@ -38,68 +98,63 @@ Existing direct signals:
 - `visible-text`
 - `own-text-label`
 - `visible-text-reconstructed`
-- `retry-resolved`
-
-New v0.1.13 metadata signals:
 - `metadata-rendered-sponsored-token`
 - `metadata-rendered-ad-corroborated`
 - `metadata-visual-sponsored`
 - `metadata-visual-ad-corroborated`
+- `suggested-label-post`
+- `suggested-follow-post`
+- `suggested-group-join-post`
 
-v0.4.1 uses React feed-unit category metadata as the primary ad signal and bounded per-card hydration retries. Medium candidates are permanently CSS-hidden, while `blocked` remains deduplicated per DOM card. Use the page-world debug bridge to inspect blocked cards; records are captured at block time. Each connected blocked card gets a `Reveal blocked #N` button; revealing it restores and centers the card without changing the blocked counter or evidence snapshot. Suggested posts are identified by a visible header `Suggested for you`/`Senin için önerilen`, `Follow`/`Takip et`, or group `Join`/`Katıl` control when enabled from the popup.
+Short `Ad` labels are expected to require independent corroboration rather than acting as a standalone high-confidence signal.
 
-From Facebook's normal DevTools Console:
+## Medium-confidence evidence
 
-```js
-document.addEventListener("fbok-debug-response", (event) => console.log(event.detail), { once: true });
-document.dispatchEvent(new CustomEvent("fbok-debug-request", { detail: { action: "blockedPosts" } }));
-```
-
-The short `Ad` token is deliberately not sufficient by itself. It is promoted only when the same feed card also has an outbound link and no Facebook permalink.
-
-## Medium-confidence reasons
+Current medium reasons include:
 
 - `shape-dangling-label-no-permalink`
 - `shape-outbound-no-permalink`
 
-Medium candidates are hidden in this build by product decision; use Reveal for audit.
-
-## Popup toggle
-
-Click the fbok toolbar icon and change **Hide suggested posts**. The setting is persisted and applied to open Facebook tabs through extension storage.
+Medium candidates are currently hidden by product policy. Treat every revealed medium card as useful false-positive/false-negative evidence.
 
 ## False-positive checks
 
-These must remain visible:
+Pay special attention to wanted content that should not disappear unexpectedly:
 
-- normal post containing “Sponsored”, “Sponsorlu”, or “Ad” in body/comment text;
-- ordinary external-link share;
-- group/marketplace/reel cards;
+- normal friend posts;
+- normal followed-page posts;
+- intentional group posts;
+- ordinary external-link shares;
+- reels and marketplace cards;
 - story tray;
-- normal page post carrying `data-ad-rendering-role` attributes;
-- sidebar ads (out of scope for feed v0.1).
+- posts containing the literal words `Sponsored`, `Sponsorlu`, or `Ad` in body/comment text;
+- right-column Contacts / Kişiler.
 
-Pay particular attention to ordinary outbound-link posts: they may become medium candidates, but must not disappear unless a real header-level ad token is also found.
+Suggested/recommended content hidden by the medium policy should be recorded separately from genuinely wanted organic false positives.
 
-## Regression checks
+## Performance regression checks
 
-- Initial Facebook load completes.
-- Infinite scroll continues working.
-- Opening/closing menus does not freeze the feed.
-- A high-confidence post never downgrades back to medium and reappears after later DOM mutations.
-- Medium candidates stay visible.
-- Normal posts are not hidden.
+During a longer scroll session verify:
 
-## Report back
+- initial Facebook load completes;
+- scrolling remains responsive;
+- new feed cards continue loading;
+- opening/closing Facebook menus does not freeze the page;
+- memory/CPU does not obviously climb without bound;
+- repeated navigation between feed and other Facebook pages remains usable;
+- extension reload + Facebook hard refresh recovers cleanly.
 
-Record:
+## Report format
 
-- visible feed ads before fbok classifies them;
-- ads that disappear;
-- orange medium candidates;
-- missed ads;
-- any organic post that disappears;
-- whether infinite scroll remains healthy;
-- full bottom-left badge text.
+For each test session record:
 
-If a visible ad is still missed, run `__fbokDebug.diagnostics()` from the extension content-script execution context and capture the result.
+- browser + Facebook UI language;
+- approximate number of cards observed;
+- ads hidden;
+- ads missed;
+- suggested/recommended content hidden;
+- wanted organic posts hidden;
+- right-rail result;
+- whether infinite scroll stayed healthy;
+- full debug badge text;
+- diagnostics output if anything suspicious happened.
