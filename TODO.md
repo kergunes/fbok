@@ -19,6 +19,7 @@
   - [x] First real-world miss captured: Logitech feed ad labeled `Ad`
   - [x] Added strict visible `Ad` header detection in v0.1.3
   - [x] Relaxed brittle heading dependency and added debug badge in v0.1.4
+  - [x] Live DOM inspection found closed shadow-root + `/ads/about/` wrapper; added `ads-about-link` detector in v0.1.5
 - [ ] False-positive / false-negative test pass
 - [ ] Tune detectors from real DOM captures
 

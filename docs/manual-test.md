@@ -12,7 +12,7 @@ v0.1 deliberately **does not hide posts**. It only highlights high-confidence Sp
 
 ## Expected behavior
 
-A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.4 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
+A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.5 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
 
 - `svg-sprite-ref`
 - `accessibility-label`
@@ -21,6 +21,7 @@ A detected sponsored post receives a red outline and an `fbok · <reason>` badge
 - `visible-text`
 - `visible-text-reconstructed`
 - `visible-short-ad-label`
+- `ads-about-link`
 
 Each inspected feed post also receives `data-fbok-seen="true"`. This separates "the detector scanned it and did not match" from "the scanner never reached it."
 
@@ -49,6 +50,7 @@ Verify at least:
 
 - English Facebook UI: `Sponsored`.
 - English Facebook UI variant: short `Ad` label directly under/near the advertiser name.
+- Closed-shadow-root `Ad` label wrapped by a Facebook `/ads/about/` link.
 - Turkish Facebook UI: `Sponsorlu`.
 - Chromium SVG-sprite sponsored labels.
 - Obfuscated / character-split sponsored labels.

@@ -391,7 +391,31 @@
     return null;
   }
 
+
+  function detectAdsAboutLink(post) {
+    const links = candidateElements(
+      post,
+      'a[href*="/ads/about/"], a[href*="facebook.com/ads/about/"]',
+    );
+
+    for (const link of links) {
+      if (!isLikelyMetadataNode(link, post)) continue;
+
+      const href = link.getAttribute("href") ?? "";
+      if (!href.includes("/ads/about/")) continue;
+
+      return {
+        reason: "ads-about-link",
+        node: link,
+        confidence: "high",
+      };
+    }
+
+    return null;
+  }
+
   const detectors = [
+    detectAdsAboutLink,
     detectSvgSprite,
     detectAccessibilityLabel,
     detectVisibleExactText,
@@ -429,7 +453,7 @@
 
     const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
     const detected = document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
-    badge.textContent = `fbok 0.1.4 · scanned ${scanned} · hits ${detected}`;
+    badge.textContent = `fbok 0.1.5 · scanned ${scanned} · hits ${detected}`;
   }
 
   function markDetected(post, detection) {
@@ -520,7 +544,7 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.4",
+      version: "0.1.5",
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;

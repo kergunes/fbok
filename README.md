@@ -19,9 +19,11 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - Dinamik/infinite feed değişikliklerini izlemek için `MutationObserver`
 - Birbirinden bağımsız birden fazla sponsored-post detection yöntemi
 - `aria-label` / `aria-labelledby` accessibility detection
+- Facebook reklam metadata'sındaki `/ads/about/` linkini yüksek güvenli sinyal olarak kullanma
 - Chromium'daki SVG `<use href="#…">` sprite referanslarını çözme
 - Görünür veya obfuscate edilmiş `Sponsored / Sponsorlu` metnini CSS sırasına göre yeniden oluşturma
-- Feed header'ında görünen kısa `Ad` etiketini yalnızca postun üst metadata bölgesi + yakın advertiser/link bağlamında tespit etme
+- Feed header'ındaki kapalı shadow DOM içinde render edilen `Ad` etiketi için, onu saran `/ads/about/` linkini doğrudan tespit etme
+- Görünür kısa `Ad` etiketi için postun üst metadata bölgesi + yakın advertiser/link bağlamı fallback'i
 - Güncel `aria-posinset` feed container'ları + `FeedUnit`/semantic article fallback'leri
 - **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
 
