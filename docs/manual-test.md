@@ -13,7 +13,7 @@ v0.1.9 does **not hide posts**. It highlights candidates and records why they ma
 ## Visual meaning
 
 - **Red solid outline** = high-confidence ad signal.
-- **Orange dashed outline** = medium-confidence unlabeled-ad shape candidate.
+- **Orange dashed outline** = reserved for future medium-confidence shape testing; disabled in v0.1.10.
 - No outline = no current match.
 
 The bottom-left badge includes:

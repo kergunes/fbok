@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.9";
+  const VERSION = "0.1.10";
 
   const CONFIG = Object.freeze({
     debug: true,
@@ -10,7 +10,7 @@
     retryIntervalMs: 100,
     retryWindowMs: 5000,
     maxPendingSignals: 64,
-    shapeSweepIntervalMs: 800,
+    debugBadgeIntervalMs: 250,
     metadataMaxPixelsFromTop: 280,
     metadataMaxFractionOfPost: 0.42,
   });
@@ -40,7 +40,8 @@
 
   let flushScheduled = false;
   let retryTimer = null;
-  let lastShapeSweep = 0;
+  let debugBadgeScheduled = false;
+  let lastDebugBadgeAt = 0;
 
   const debugState = {
     scanned: 0,
@@ -58,6 +59,7 @@
     ariaMatches: 0,
     textMatches: 0,
     shapeCandidates: 0,
+    badgeUpdates: 0,
   };
 
   function cleanText(value) {
@@ -245,7 +247,7 @@
     return offsetFromTop >= -12 && offsetFromTop <= maxOffset;
   }
 
-  function updateDebugBadge() {
+  function renderDebugBadge() {
     if (!CONFIG.debug) return;
 
     let badge = document.getElementById("fbok-debug-badge");
@@ -256,24 +258,36 @@
       document.documentElement.appendChild(badge);
     }
 
-    const scanned = document.querySelectorAll(
-      `[${SEEN_ATTR}="true"]`,
-    ).length;
-
-    const detected = document.querySelectorAll(
-      `[${DETECTED_ATTR}="true"]`,
-    ).length;
-
-    debugState.scanned = scanned;
-    debugState.hits = detected;
     debugState.cachedLabels = labelTextById.size;
+    debugState.badgeUpdates += 1;
 
     badge.textContent =
-      `fbok ${VERSION} · scanned ${scanned} · hits ${detected}` +
+      `fbok ${VERSION} · scanned ${debugState.scanned} · hits ${debugState.hits}` +
       ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
       ` · cache ${labelTextById.size}` +
       ` · late/rescue ${debugState.lateTextLabels}/${debugState.rescuedLabels}` +
       ` · retry ${pendingSignals.size}`;
+  }
+
+  function updateDebugBadge(force = false) {
+    if (!CONFIG.debug) return;
+
+    const now = performance.now();
+    if (force || now - lastDebugBadgeAt >= CONFIG.debugBadgeIntervalMs) {
+      lastDebugBadgeAt = now;
+      debugBadgeScheduled = false;
+      renderDebugBadge();
+      return;
+    }
+
+    if (debugBadgeScheduled) return;
+    debugBadgeScheduled = true;
+
+    window.setTimeout(() => {
+      debugBadgeScheduled = false;
+      lastDebugBadgeAt = performance.now();
+      renderDebugBadge();
+    }, CONFIG.debugBadgeIntervalMs);
   }
 
   function markDetected(post, detection) {
@@ -286,6 +300,8 @@
     post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
 
     if (!wasDetected) {
+      debugState.hits += 1;
+
       if (detection.confidence === "high") {
         debugState.highHits += 1;
       } else {
@@ -834,7 +850,10 @@
   function inspectPost(post) {
     if (!(post instanceof Element) || !isFeedPost(post)) return;
 
-    post.setAttribute(SEEN_ATTR, "true");
+    if (post.getAttribute(SEEN_ATTR) !== "true") {
+      post.setAttribute(SEEN_ATTR, "true");
+      debugState.scanned += 1;
+    }
 
     const high = detectHighConfidenceSignals(post);
 
@@ -842,12 +861,6 @@
       markDetected(post, high);
       updateDebugBadge();
       return;
-    }
-
-    const shape = detectShapeCandidate(post);
-
-    if (shape) {
-      markDetected(post, shape);
     }
 
     updateDebugBadge();
@@ -895,22 +908,9 @@
     }
   }
 
-  function sweepShapeCandidates(force = false) {
-    const now = performance.now();
-
-    if (!force && now - lastShapeSweep < CONFIG.shapeSweepIntervalMs) {
-      return;
-    }
-
-    lastShapeSweep = now;
-
-    for (const post of document.querySelectorAll(POST_SELECTOR)) {
-      if (!isFeedPost(post)) continue;
-      if (post.getAttribute(DETECTED_ATTR) === "true") continue;
-
-      const shape = detectShapeCandidate(post);
-      if (shape) markDetected(post, shape);
-    }
+  function sweepShapeCandidates() {
+    // Disabled in v0.1.10 stability hotfix. Shape heuristics are intentionally
+    // deferred until high-confidence detection is proven fast on the live feed.
   }
 
   function handleRemovedNode(node, mutationTarget) {
@@ -937,8 +937,12 @@
   function handleAddedNode(node, mutationTarget) {
     if (node instanceof Element) {
       cacheLabelTargets(node);
-      scanLabelRoot(node);
       enqueueFromNode(node);
+
+      requestAnimationFrame(() => {
+        if (node.isConnected) scanLabelRoot(node);
+      });
+
       return;
     }
 
@@ -964,26 +968,6 @@
 
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
-      if (mutation.type === "characterData") {
-        const textNode = mutation.target;
-        const parent = textNode.parentElement;
-
-        if (parent) {
-          if (parent.id) {
-            if (cacheLabelText(parent.id, parent.textContent, parent)) {
-              debugState.lateTextLabels += 1;
-            }
-          }
-
-          processSignalElement(parent);
-
-          const post = resolvePostContainer(parent);
-          if (post) enqueuePost(post);
-        }
-
-        continue;
-      }
-
       for (const node of mutation.removedNodes) {
         handleRemovedNode(node, mutation.target);
       }
@@ -1003,33 +987,29 @@
   });
 
   function start() {
-    cacheLabelTargets(document.documentElement);
-    scanLabelRoot(document.documentElement);
+    const root = document.body || document.documentElement;
+
+    cacheLabelTargets(root);
+    scanLabelRoot(root);
     scanExistingFeed();
-    sweepShapeCandidates(true);
 
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
-      characterData: true,
     });
 
     window.__fbokDebug = Object.freeze({
       version: VERSION,
       rescan() {
-        scanLabelRoot(document.documentElement);
+        const root = document.body || document.documentElement;
+        scanLabelRoot(root);
         scanExistingFeed();
-        sweepShapeCandidates(true);
       },
       scannedCount() {
-        return document.querySelectorAll(
-          `[${SEEN_ATTR}="true"]`,
-        ).length;
+        return debugState.scanned;
       },
       detectedCount() {
-        return document.querySelectorAll(
-          `[${DETECTED_ATTR}="true"]`,
-        ).length;
+        return debugState.hits;
       },
       detectedPosts() {
         return Array.from(
@@ -1057,7 +1037,7 @@
       );
     }
 
-    updateDebugBadge();
+    updateDebugBadge(true);
   }
 
   start();
