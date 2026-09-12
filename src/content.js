@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.11";
+  const VERSION = "0.1.12";
 
   const CONFIG = Object.freeze({
     debug: true,
@@ -356,25 +356,43 @@
     if (!(post instanceof Element)) return;
 
     const wasDetected = post.getAttribute(DETECTED_ATTR) === "true";
+    const previousConfidence = post.getAttribute(CONFIDENCE_ATTR);
+    const effectiveConfidence =
+      previousConfidence === "high" ? "high" : detection.confidence;
+
+    const previousReasons = (post.getAttribute(REASON_ATTR) ?? "")
+      .split(",")
+      .map((reason) => reason.trim())
+      .filter(Boolean);
+
+    const reasons = [
+      ...new Set([...previousReasons, ...detection.reasons]),
+    ];
 
     post.setAttribute(DETECTED_ATTR, "true");
-    post.setAttribute(REASON_ATTR, detection.reasons.join(", "));
-    post.setAttribute(CONFIDENCE_ATTR, detection.confidence);
+    post.setAttribute(REASON_ATTR, reasons.join(", "));
+    post.setAttribute(CONFIDENCE_ATTR, effectiveConfidence);
 
     if (!wasDetected) {
       debugState.hits += 1;
 
-      if (detection.confidence === "high") {
+      if (effectiveConfidence === "high") {
         debugState.highHits += 1;
       } else {
         debugState.mediumHits += 1;
       }
+    } else if (
+      previousConfidence === "medium" &&
+      effectiveConfidence === "high"
+    ) {
+      debugState.mediumHits = Math.max(0, debugState.mediumHits - 1);
+      debugState.highHits += 1;
     }
 
     if (CONFIG.debug) {
       console.debug("[fbok] Sponsored candidate", {
-        reasons: detection.reasons,
-        confidence: detection.confidence,
+        reasons,
+        confidence: effectiveConfidence,
         post,
       });
     }
@@ -705,6 +723,67 @@
     );
   }
 
+  function renderedMetadataSignal(post) {
+    if (!(post instanceof Element)) return null;
+
+    const postRect = post.getBoundingClientRect();
+    if (postRect.width <= 0 || postRect.height <= 0) return null;
+
+    const candidates = Array.from(
+      post.querySelectorAll("div, span, a"),
+    ).slice(0, 220);
+
+    for (const node of candidates) {
+      if (!isElementVisible(node)) continue;
+
+      const rect = node.getBoundingClientRect();
+      const offsetFromTop = rect.top - postRect.top;
+
+      if (
+        offsetFromTop < -8 ||
+        offsetFromTop > 170 ||
+        rect.height <= 0 ||
+        rect.height > 96 ||
+        rect.width <= 0 ||
+        rect.width > Math.min(560, postRect.width * 0.9)
+      ) {
+        continue;
+      }
+
+      const rendered = cleanText(node.innerText);
+      if (!rendered || rendered.length > 140) continue;
+
+      const tokens = rendered
+        .split(/[\s\n\r·•|]+/u)
+        .map(normalizeLabel)
+        .filter(Boolean);
+
+      if (tokens.includes("sponsored") || tokens.includes("sponsorlu")) {
+        debugState.textMatches += 1;
+        return {
+          reason: "metadata-rendered-sponsored-token",
+          confidence: "high",
+          node,
+        };
+      }
+
+      if (
+        tokens.includes("ad") &&
+        !hasPermalink(post) &&
+        hasOutboundLink(post)
+      ) {
+        debugState.textMatches += 1;
+        return {
+          reason: "metadata-rendered-ad-corroborated",
+          confidence: "high",
+          node,
+        };
+      }
+    }
+
+    return null;
+  }
+
   function processSignalElement(node) {
     if (!(node instanceof Element)) return false;
 
@@ -816,6 +895,11 @@
       if (hit) {
         hits.push({ ...hit, node });
       }
+    }
+
+    const renderedHit = renderedMetadataSignal(post);
+    if (renderedHit) {
+      hits.push(renderedHit);
     }
 
     if (hits.length === 0) return null;

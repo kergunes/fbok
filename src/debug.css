@@ -1,15 +1,14 @@
-[data-fbok-detected="true"] {
-  outline: 3px solid #ff3b30 !important;
+[data-fbok-detected="true"][data-fbok-confidence="high"] {
+  display: none !important;
+}
+
+[data-fbok-detected="true"][data-fbok-confidence="medium"] {
+  outline: 3px dashed #ff9500 !important;
   outline-offset: -3px !important;
   position: relative !important;
 }
 
-[data-fbok-detected="true"][data-fbok-confidence="medium"] {
-  outline-style: dashed !important;
-  outline-color: #ff9500 !important;
-}
-
-[data-fbok-detected="true"]::after {
+[data-fbok-detected="true"][data-fbok-confidence="medium"]::after {
   content: "fbok · " attr(data-fbok-confidence) " · " attr(data-fbok-reason);
   position: absolute !important;
   top: 4px !important;
