@@ -1,6 +1,6 @@
 {
   "name": "fbok",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "description": "Facebook-specific sponsored-post detector for Chromium browsers.",
   "scripts": {

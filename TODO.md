@@ -59,7 +59,7 @@ Current release line: **v0.5.1**
 ## P2 — Release readiness
 
 - [ ] Add release/versioning workflow.
-- [ ] Add production icon assets.
+- [x] Add production icon assets.
 - [ ] Prepare Chrome Web Store listing copy.
 - [ ] Prepare privacy disclosure matching actual permissions.
 - [ ] Verify unpacked and packaged builds behave identically.

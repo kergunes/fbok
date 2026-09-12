@@ -1,16 +1,21 @@
 {
   "manifest_version": 3,
   "name": "fbok",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Detects and hides Facebook Sponsored / Sponsorlu / Ad posts, with an optional suggested-post filter.",
   "host_permissions": [
     "https://facebook.com/*",
     "https://www.facebook.com/*"
   ],
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "action": {
     "default_title": "fbok settings",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
@@ -18,9 +23,16 @@
         "https://facebook.com/*",
         "https://www.facebook.com/*"
       ],
-      "js": ["src/content.js"],
-      "css": ["src/debug.css"],
+      "js": [
+        "src/content.js"
+      ],
+      "css": [
+        "src/debug.css"
+      ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "128": "icons/icon128.png"
+  }
 }

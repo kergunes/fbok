@@ -4,7 +4,7 @@ Facebook feed cleaner for Chromium browsers.
 
 fbok is a Manifest V3 extension that removes unwanted Facebook feed content locally in the browser. Its primary target is Sponsored / Sponsorlu / Ad content, with optional filtering for suggested posts and separate handling for the right-rail Sponsored module.
 
-Current version: **v0.5.1**
+Current version: **v0.5.3**
 
 ## What it does
 
@@ -111,6 +111,8 @@ Use `action: "diagnostics"` for detector counters and current settings.
 ```text
 .
 ├── manifest.json
+├── icons/
+│   └── icon128.png
 ├── popup.html
 ├── popup.css
 ├── popup.js

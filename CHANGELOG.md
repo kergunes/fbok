@@ -2,6 +2,17 @@
 
 Notable development milestones for fbok.
 
+## v0.5.3
+
+- Added the packaged 128x128 fbok extension icon.
+- Wired the icon into the extension manifest and toolbar action.
+- Bumped the Chrome Web Store package version to 0.5.3.
+
+## v0.5.2
+
+- Improved feed performance by avoiding duplicate label-subtree scans.
+- Added a popup toggle for on-page debug information.
+
 ## v0.5.1
 
 - Made queued scan-root deduplication linear during mutation bursts.

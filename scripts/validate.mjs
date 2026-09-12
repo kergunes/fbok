@@ -7,6 +7,14 @@ const allowedFacebookHosts = new Set([
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
 
+for (const path of Object.values(manifest.icons ?? {})) {
+  await access(path);
+}
+
+for (const path of Object.values(manifest.action?.default_icon ?? {})) {
+  await access(path);
+}
+
 if (manifest.action?.default_popup) {
   await access(manifest.action.default_popup);
 }
