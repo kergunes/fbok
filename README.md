@@ -168,8 +168,13 @@ See `TODO.md` for the active work list and `CHANGELOG.md` for milestone history.
 
 ## Privacy
 
+fbok processes Facebook page content locally in the browser only for content filtering.
+
 - zero telemetry;
+- zero developer-operated data collection;
 - zero external requests;
 - Facebook-only host access;
 - no remote backend;
-- no sale or collection of user browsing data.
+- no sale or transfer of user data.
+
+See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
