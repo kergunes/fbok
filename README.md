@@ -23,14 +23,25 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - Tespit edilen işaretten doğru feed post container'ına yükselme
 - **Fail-open:** yeterli güven yoksa gönderiyi gizlememe
 
-## v0.1 hedefi
+## v0.1
 
-İlk sürüm doğrudan reklam silmeyecek. Önce güvenli bir debug/highlight mode geliştirilecek:
+İlk çalışan sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlemez.
 
-- Şüpheli reklam gönderilerini highlight etme
-- Her tespitte detected reason gösterme
-- Farklı Facebook DOM varyasyonlarında false-positive testi
-- Detection yöntemlerini ayrı ayrı gözlemleyebilme
+- Sponsored adayını outline ile işaretler
+- Detection reason gösterir
+- İngilizce `Sponsored` ve Türkçe `Sponsorlu` etiketlerini tanır
+- Yalnızca semantik Facebook feed postları içinde işlem yapar
+- Infinite scroll / dinamik DOM değişikliklerini izler
+
+Manuel doğrulama adımları için [`docs/manual-test.md`](docs/manual-test.md) dosyasına bak.
+
+### Yerel kurulum
+
+1. Repoyu clone/download et.
+2. Chrome'da `chrome://extensions`, Brave'de `brave://extensions` sayfasını aç.
+3. **Developer mode**'u etkinleştir.
+4. **Load unpacked** ile repo klasörünü seç.
+5. Facebook'u aç veya yenile.
 
 ## Daha sonraki hedefler
 
@@ -45,7 +56,7 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 
 - Zero telemetry
 - Zero external requests
-- Yalnızca `facebook.com` için host permission
+- Yalnızca `facebook.com` için host erişimi
 - Kullanıcı verisi toplama veya uzak sunucuya gönderme yok
 
 ## Yayınlama

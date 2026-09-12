@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "fbok",
+  "version": "0.1.0",
+  "description": "Highlights likely Sponsored / Sponsorlu posts in the Facebook feed for safe debugging.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://facebook.com/*",
+        "https://www.facebook.com/*"
+      ],
+      "js": ["src/content.js"],
+      "css": ["src/debug.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
