@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fbok",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Detects and hides Facebook Sponsored / Sponsorlu / Ad posts, with an optional suggested-post filter.",
   "host_permissions": [
     "https://facebook.com/*",

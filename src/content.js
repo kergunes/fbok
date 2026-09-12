@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.5.1";
+  const VERSION = "0.5.2";
 
   const CONFIG = Object.freeze({
     debug: true,
@@ -64,7 +64,7 @@
   let retryTimer = null;
   let debugBadgeScheduled = false;
   let lastDebugBadgeAt = 0;
-  let settings = { hideSuggested: true };
+  let settings = { hideSuggested: true, debugInfo: true };
   let rightRailScanScheduled = false;
   let labelScanScheduled = false;
 
@@ -614,7 +614,10 @@
   }
 
   function renderDebugBadge() {
-    if (!CONFIG.debug) return;
+    if (!CONFIG.debug || !settings.debugInfo) {
+      document.getElementById("fbok-debug-badge")?.remove();
+      return;
+    }
 
     let badge = document.getElementById("fbok-debug-badge");
 
@@ -640,46 +643,15 @@
   }
 
   function renderBlockedControls() {
-    if (!CONFIG.debug) return;
-
-    let controls = document.getElementById("fbok-debug-controls");
-
-    if (!controls) {
-      controls = document.createElement("div");
-      controls.id = "fbok-debug-controls";
-      document.documentElement.appendChild(controls);
-    }
-
-    controls.replaceChildren();
-
-    blockedRecords.forEach((record, index) => {
-      if (!record.post.isConnected || revealedPosts.has(record.post)) return;
-
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = `Reveal blocked #${index + 1}`;
-      button.title = `${record.confidence} · ${record.reason}`;
-      button.addEventListener("click", () => {
-        if (!record.post.isConnected) return;
-
-        revealedPosts.add(record.post);
-        record.post.setAttribute(REVEALED_ATTR, "true");
-        renderBlockedControls();
-        updateDebugBadge(true);
-        window.requestAnimationFrame(() => {
-          if (record.post.isConnected) {
-            record.post.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-        });
-      });
-      controls.appendChild(button);
-    });
-
-    controls.hidden = controls.childElementCount === 0;
+    document.getElementById("fbok-debug-controls")?.remove();
   }
 
   function updateDebugBadge(force = false) {
-    if (!CONFIG.debug) return;
+    if (!CONFIG.debug || !settings.debugInfo) {
+      debugBadgeScheduled = false;
+      document.getElementById("fbok-debug-badge")?.remove();
+      return;
+    }
 
     const now = performance.now();
     if (force || now - lastDebugBadgeAt >= CONFIG.debugBadgeIntervalMs) {
@@ -1682,6 +1654,7 @@
           ...debugState,
           mediumHideLocked: true,
           hideSuggested: settings.hideSuggested,
+          debugInfo: settings.debugInfo,
           cachedLabels: labelTextById.size,
           pendingSignals: pendingSignals.size,
           currentlyHidden: blockedPostDetails().filter((record) => record.hiddenNow).length,
@@ -1732,6 +1705,8 @@
     for (const post of node.querySelectorAll(POST_SELECTOR)) {
       if (isFeedPost(post)) enqueuePost(post);
     }
+
+    return ownPost;
   }
 
   function scanExistingFeed() {
@@ -1769,9 +1744,11 @@
   function handleAddedNode(node, mutationTarget) {
     if (node instanceof Element) {
       cacheLabelTargets(node);
-      enqueueFromNode(node);
+      const ownPost = enqueueFromNode(node);
 
-      enqueueLabelRoot(node);
+      // Post inspection already scans its labels. Avoid scanning the same
+      // subtree again through the label-root queue.
+      if (!ownPost) enqueueLabelRoot(node);
 
       return;
     }
@@ -1854,12 +1831,19 @@
     if (!globalThis.chrome?.storage?.onChanged) return;
 
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== "sync" || !changes.hideSuggested) return;
+      if (areaName !== "sync") return;
 
-      settings.hideSuggested = Boolean(changes.hideSuggested.newValue);
+      if (changes.hideSuggested) {
+        settings.hideSuggested = Boolean(changes.hideSuggested.newValue);
 
-      if (!settings.hideSuggested) clearSuggestedDetections();
-      scanExistingFeed();
+        if (!settings.hideSuggested) clearSuggestedDetections();
+        scanExistingFeed();
+      }
+
+      if (changes.debugInfo) {
+        settings.debugInfo = Boolean(changes.debugInfo.newValue);
+      }
+
       updateDebugBadge(true);
     });
   }
@@ -1936,8 +1920,9 @@
       return;
     }
 
-    chrome.storage.sync.get({ hideSuggested: true }, (stored) => {
+    chrome.storage.sync.get({ hideSuggested: true, debugInfo: true }, (stored) => {
       settings.hideSuggested = Boolean(stored.hideSuggested);
+      settings.debugInfo = Boolean(stored.debugInfo);
       start();
     });
   }
