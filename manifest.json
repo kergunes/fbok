@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fbok",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Detects Facebook Sponsored / Sponsorlu / Ad feed posts and hides only high-confidence matches.",
   "host_permissions": [
     "https://facebook.com/*",
