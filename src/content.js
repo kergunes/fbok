@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.10";
+  const VERSION = "0.1.11";
 
   const CONFIG = Object.freeze({
     debug: true,
@@ -60,6 +60,7 @@
     textMatches: 0,
     shapeCandidates: 0,
     badgeUpdates: 0,
+    lastPendingReason: "",
   };
 
   function cleanText(value) {
@@ -184,6 +185,37 @@
     return true;
   }
 
+  function climbToCardByWidth(signal) {
+    if (!(signal instanceof Element)) return null;
+
+    let node = signal;
+    let best = null;
+
+    for (let depth = 0; node && depth < 24; depth += 1) {
+      const parent = node.parentElement;
+      if (!parent || parent === document.body) break;
+
+      const width = node.getBoundingClientRect().width;
+      const parentWidth = parent.getBoundingClientRect().width;
+
+      if (width >= 400 && width <= 900) {
+        best = node;
+
+        if (parentWidth > width * 1.2) {
+          break;
+        }
+      }
+
+      node = parent;
+    }
+
+    if (!best) return null;
+    if (best.closest('[role="dialog"]')) return null;
+    if (!best.closest('[role="main"]')) return null;
+
+    return best;
+  }
+
   function geometryCardFromSignal(signal) {
     if (!(signal instanceof Element)) return null;
 
@@ -220,6 +252,30 @@
   function resolvePostContainer(node) {
     if (!(node instanceof Element)) return null;
 
+    const articleOrPagelet = node.closest(
+      '[role="article"], article, [data-pagelet^="FeedUnit"]',
+    );
+
+    if (
+      articleOrPagelet &&
+      articleOrPagelet.closest('[role="main"]') &&
+      !articleOrPagelet.closest('[role="dialog"]')
+    ) {
+      return articleOrPagelet;
+    }
+
+    if (!node.closest('[role="dialog"]')) {
+      const positioned = node.closest("[aria-posinset]");
+
+      if (
+        positioned &&
+        positioned.closest('[role="main"]') &&
+        !positioned.closest('[role="complementary"]')
+      ) {
+        return positioned;
+      }
+    }
+
     let candidate = node.closest(POST_SELECTOR);
 
     while (candidate) {
@@ -227,7 +283,10 @@
       candidate = candidate.parentElement?.closest(POST_SELECTOR) ?? null;
     }
 
-    return geometryCardFromSignal(node);
+    return (
+      climbToCardByWidth(node) ||
+      geometryCardFromSignal(node)
+    );
   }
 
   function isLikelyMetadataNode(node, post) {
@@ -266,7 +325,10 @@
       ` · H/M ${debugState.highHits}/${debugState.mediumHits}` +
       ` · cache ${labelTextById.size}` +
       ` · late/rescue ${debugState.lateTextLabels}/${debugState.rescuedLabels}` +
-      ` · retry ${pendingSignals.size}`;
+      ` · retry ${pendingSignals.size}` +
+      (pendingSignals.size > 0 && debugState.lastPendingReason
+        ? `(${debugState.lastPendingReason})`
+        : "");
   }
 
   function updateDebugBadge(force = false) {
@@ -690,6 +752,7 @@
       hit,
     });
 
+    debugState.lastPendingReason = hit.reason;
     debugState.retryQueued += 1;
     ensureRetryLoop();
     updateDebugBadge();
@@ -861,6 +924,14 @@
       markDetected(post, high);
       updateDebugBadge();
       return;
+    }
+
+    // Cheap fallback: evaluated only on the feed post already being inspected.
+    // No document-wide sweep and no extra timer.
+    const shape = detectShapeCandidate(post);
+
+    if (shape) {
+      markDetected(post, shape);
     }
 
     updateDebugBadge();

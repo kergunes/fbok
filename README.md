@@ -24,7 +24,7 @@ Bu proje generic bir ad blocker değildir. Ağ isteklerini veya genel reklam URL
 - CSS `order` ile görsel sıralama + üç farklı decoy partition reconstruction
 - yalnızca **pozitif olarak Sponsored/Ad sınıflandırılmış** ama henüz posta bağlanamamış sinyaller için bounded retry queue
 - `aria-posinset`, `FeedUnit`, semantic article ve geometry fallback ile post resolution
-- unlabeled-ad shape heuristics performans doğrulaması tamamlanana kadar devre dışıdır
+- unlabeled-ad shape heuristics yalnızca zaten inspect edilen feed postunda bir kez çalışır; document-wide shape sweep yoktur
 - **fail-open:** hide mode açılana kadar şüpheli postlar yalnızca highlight edilir
 
 ## v0.1

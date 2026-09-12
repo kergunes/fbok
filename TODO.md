@@ -19,7 +19,7 @@
 - [x] Late text-node and removed-text rescue
 - [x] Bounded retry queue for positively classified unresolved signals
 - [x] Remove data-ad-rendering-role as a detection signal
-- [x] v0.1.10 stability hotfix: remove full-document debug recounts, disable characterData observer and shape sweeps\n- [ ] Real Facebook feed validation in Chrome/Brave
+- [x] v0.1.10 stability hotfix: remove full-document debug recounts, disable characterData observer and shape sweeps\n- [x] v0.1.11: reference-style width-climb container fallback + per-post-only medium shape detection\n- [ ] Real Facebook feed validation in Chrome/Brave
 - [ ] False-positive / false-negative test pass
 - [ ] Tune detectors from real DOM captures
 
