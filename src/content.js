@@ -392,17 +392,23 @@
   }
 
 
-  function detectAdsAboutLink(post) {
-    const links = candidateElements(
-      post,
-      'a[href*="/ads/about/"], a[href*="facebook.com/ads/about/"]',
+  function isAdsAboutHref(value) {
+    const href = String(value ?? "").toLocaleLowerCase();
+    return (
+      href.includes("/ads/about") ||
+      href.includes("facebook.com/ads/about") ||
+      href.includes("why_am_i_seeing_this_ad")
     );
+  }
+
+  function detectAdsAboutLink(post) {
+    const links = Array.from(post.querySelectorAll("a[href]"));
 
     for (const link of links) {
-      if (!isLikelyMetadataNode(link, post)) continue;
+      const rawHref = link.getAttribute("href") ?? "";
+      const resolvedHref = link.href ?? "";
 
-      const href = link.getAttribute("href") ?? "";
-      if (!href.includes("/ads/about/")) continue;
+      if (!isAdsAboutHref(rawHref) && !isAdsAboutHref(resolvedHref)) continue;
 
       return {
         reason: "ads-about-link",
@@ -412,6 +418,27 @@
     }
 
     return null;
+  }
+
+  function scanAdsAboutLinks(root = document) {
+    if (!(root instanceof Document || root instanceof Element)) return;
+
+    const links = root.querySelectorAll("a[href]");
+    for (const link of links) {
+      const rawHref = link.getAttribute("href") ?? "";
+      const resolvedHref = link.href ?? "";
+
+      if (!isAdsAboutHref(rawHref) && !isAdsAboutHref(resolvedHref)) continue;
+
+      const post = resolvePostContainer(link);
+      if (!post) continue;
+
+      markDetected(post, {
+        confidence: "high",
+        reasons: ["ads-about-link"],
+        nodes: [link],
+      });
+    }
   }
 
   const detectors = [
@@ -453,7 +480,7 @@
 
     const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
     const detected = document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
-    badge.textContent = `fbok 0.1.5 · scanned ${scanned} · hits ${detected}`;
+    badge.textContent = `fbok 0.1.6 · scanned ${scanned} · hits ${detected}`;
   }
 
   function markDetected(post, detection) {
@@ -517,6 +544,8 @@
   }
 
   function scanExistingFeed() {
+    scanAdsAboutLinks(document);
+
     for (const post of document.querySelectorAll(POST_SELECTOR)) {
       if (isFeedPost(post)) enqueuePost(post);
     }
@@ -530,6 +559,9 @@
       }
 
       for (const addedNode of mutation.addedNodes) {
+        if (addedNode instanceof Element) {
+          scanAdsAboutLinks(addedNode);
+        }
         enqueueFromNode(addedNode);
       }
     }
@@ -544,7 +576,7 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.5",
+      version: "0.1.6",
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
