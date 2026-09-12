@@ -1,6 +1,6 @@
-# v0.1.12 manual test checklist
+# v0.1.13 manual test checklist
 
-v0.1.12 is the first blocking pass. It hides only **high-confidence** feed ads. Medium-confidence shape candidates remain visible so false positives fail open.
+v0.1.13 is the first blocking pass. It hides only **high-confidence** feed ads. Medium-confidence shape candidates remain visible so false positives fail open.
 
 ## Setup
 
@@ -39,9 +39,13 @@ Existing direct signals:
 - `visible-text-reconstructed`
 - `retry-resolved`
 
-New v0.1.12 metadata signals:
+New v0.1.13 metadata signals:
 - `metadata-rendered-sponsored-token`
 - `metadata-rendered-ad-corroborated`
+- `metadata-visual-sponsored`
+- `metadata-visual-ad-corroborated`
+
+v0.1.13 additionally reconstructs short header labels from their on-screen geometry, so Facebook's visually ordered but DOM-obfuscated `Ad` label can still be recognized.
 
 The short `Ad` token is deliberately not sufficient by itself. It is promoted only when the same feed card also has an outbound link and no Facebook permalink.
 

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.1.12";
+  const VERSION = "0.1.13";
 
   const CONFIG = Object.freeze({
     debug: true,
@@ -13,6 +13,9 @@
     debugBadgeIntervalMs: 250,
     metadataMaxPixelsFromTop: 280,
     metadataMaxFractionOfPost: 0.42,
+    visualMetadataMaxPixelsFromTop: 92,
+    visualMetadataLineTolerancePx: 5,
+    visualMetadataJoinGapPx: 9,
   });
 
   const SPONSORED_LABELS = new Set(["sponsored", "sponsorlu", "ad"]);
@@ -58,6 +61,7 @@
     svgMatches: 0,
     ariaMatches: 0,
     textMatches: 0,
+    visualMetadataMatches: 0,
     shapeCandidates: 0,
     badgeUpdates: 0,
     lastPendingReason: "",
@@ -723,6 +727,130 @@
     );
   }
 
+
+  function visualMetadataSignal(post) {
+    if (!(post instanceof Element)) return null;
+
+    const postRect = post.getBoundingClientRect();
+    if (postRect.width <= 0 || postRect.height <= 0) return null;
+
+    const leaves = [];
+
+    for (const node of post.querySelectorAll("span, a, div")) {
+      if (node.children.length !== 0) continue;
+      if (!isElementVisible(node)) continue;
+
+      const text = cleanText(node.textContent);
+      if (!text || text.length > 32) continue;
+
+      const rect = node.getBoundingClientRect();
+      const top = rect.top - postRect.top;
+
+      if (
+        top < -8 ||
+        top > CONFIG.visualMetadataMaxPixelsFromTop ||
+        rect.height <= 0 ||
+        rect.height > 42 ||
+        rect.width <= 0 ||
+        rect.width > 220
+      ) {
+        continue;
+      }
+
+      leaves.push({
+        node,
+        text,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        centerY: rect.top + rect.height / 2,
+      });
+    }
+
+    if (leaves.length === 0) return null;
+
+    leaves.sort((a, b) => {
+      const dy = a.centerY - b.centerY;
+      if (Math.abs(dy) > CONFIG.visualMetadataLineTolerancePx) return dy;
+      return a.left - b.left;
+    });
+
+    const lines = [];
+
+    for (const leaf of leaves) {
+      let line = lines.find(
+        (candidate) =>
+          Math.abs(candidate.centerY - leaf.centerY) <=
+          CONFIG.visualMetadataLineTolerancePx,
+      );
+
+      if (!line) {
+        line = { centerY: leaf.centerY, leaves: [] };
+        lines.push(line);
+      }
+
+      line.leaves.push(leaf);
+      line.centerY =
+        line.leaves.reduce((sum, item) => sum + item.centerY, 0) /
+        line.leaves.length;
+    }
+
+    const shapeCorroborated =
+      !hasPermalink(post) && hasOutboundLink(post);
+
+    for (const line of lines) {
+      line.leaves.sort((a, b) => a.left - b.left);
+
+      const segments = [];
+      let current = null;
+
+      for (const leaf of line.leaves) {
+        if (
+          !current ||
+          leaf.left - current.right > CONFIG.visualMetadataJoinGapPx
+        ) {
+          current = {
+            text: leaf.text,
+            right: leaf.right,
+            nodes: [leaf.node],
+          };
+          segments.push(current);
+        } else {
+          current.text += leaf.text;
+          current.right = Math.max(current.right, leaf.right);
+          current.nodes.push(leaf.node);
+        }
+      }
+
+      for (const segment of segments) {
+        const normalized = normalizeLabel(segment.text);
+
+        if (
+          normalized === "sponsored" ||
+          normalized === "sponsorlu"
+        ) {
+          debugState.visualMetadataMatches += 1;
+          return {
+            reason: "metadata-visual-sponsored",
+            confidence: "high",
+            node: segment.nodes[0],
+          };
+        }
+
+        if (normalized === "ad" && shapeCorroborated) {
+          debugState.visualMetadataMatches += 1;
+          return {
+            reason: "metadata-visual-ad-corroborated",
+            confidence: "high",
+            node: segment.nodes[0],
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
   function renderedMetadataSignal(post) {
     if (!(post instanceof Element)) return null;
 
@@ -895,6 +1023,11 @@
       if (hit) {
         hits.push({ ...hit, node });
       }
+    }
+
+    const visualHit = visualMetadataSignal(post);
+    if (visualHit) {
+      hits.push(visualHit);
     }
 
     const renderedHit = renderedMetadataSignal(post);
