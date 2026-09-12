@@ -19,6 +19,12 @@
   const pendingPosts = new Set();
   let flushScheduled = false;
 
+  const debugState = {
+    adLinksSeen: 0,
+    adLinksResolved: 0,
+    adLinksUnresolved: 0,
+  };
+
   function normalizeLabel(value) {
     return String(value ?? "")
       .normalize("NFKC")
@@ -424,14 +430,25 @@
     if (!(root instanceof Document || root instanceof Element)) return;
 
     const links = root.querySelectorAll("a[href]");
+    let seen = 0;
+    let resolved = 0;
+    let unresolved = 0;
+
     for (const link of links) {
       const rawHref = link.getAttribute("href") ?? "";
       const resolvedHref = link.href ?? "";
 
       if (!isAdsAboutHref(rawHref) && !isAdsAboutHref(resolvedHref)) continue;
 
+      seen += 1;
+
       const post = resolvePostContainer(link);
-      if (!post) continue;
+      if (!post) {
+        unresolved += 1;
+        continue;
+      }
+
+      resolved += 1;
 
       markDetected(post, {
         confidence: "high",
@@ -439,6 +456,11 @@
         nodes: [link],
       });
     }
+
+    debugState.adLinksSeen = Math.max(debugState.adLinksSeen, seen);
+    debugState.adLinksResolved = Math.max(debugState.adLinksResolved, resolved);
+    debugState.adLinksUnresolved = Math.max(debugState.adLinksUnresolved, unresolved);
+    updateDebugBadge();
   }
 
   const detectors = [
@@ -480,7 +502,11 @@
 
     const scanned = document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
     const detected = document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length;
-    badge.textContent = `fbok 0.1.6 · scanned ${scanned} · hits ${detected}`;
+    badge.textContent =
+      `fbok 0.1.7 · scanned ${scanned} · hits ${detected}` +
+      ` · adlinks ${debugState.adLinksSeen}` +
+      ` · resolved ${debugState.adLinksResolved}` +
+      ` · unresolved ${debugState.adLinksUnresolved}`;
   }
 
   function markDetected(post, detection) {
@@ -576,7 +602,7 @@
     });
 
     window.__fbokDebug = Object.freeze({
-      version: "0.1.6",
+      version: "0.1.7",
       rescan: scanExistingFeed,
       scannedCount() {
         return document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length;
@@ -592,6 +618,13 @@
           confidence: post.getAttribute(CONFIDENCE_ATTR),
           post,
         }));
+      },
+      diagnostics() {
+        return {
+          ...debugState,
+          scanned: document.querySelectorAll(`[${SEEN_ATTR}="true"]`).length,
+          detected: document.querySelectorAll(`[${DETECTED_ATTR}="true"]`).length,
+        };
       },
     });
 

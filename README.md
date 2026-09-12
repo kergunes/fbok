@@ -33,7 +33,7 @@ Mevcut sürüm güvenli bir debug/highlight mode kullanır; hiçbir postu gizlem
 
 - Sponsored adayını outline ile işaretler
 - Detection reason gösterir
-- Debug modunda sayfanın sol altında `scanned / hits` sayacı gösterir
+- Debug modunda sayfanın sol altında `scanned / hits / adlinks / resolved / unresolved` teşhis sayaçları gösterir
 - İncelenen postları ayrıca işaretleyerek scan/detection ayrımını görünür kılar
 - İngilizce `Sponsored`, Türkçe `Sponsorlu` ve güncel kısa `Ad` etiketlerini tanır
 - Infinite scroll / dinamik DOM değişikliklerini izler

@@ -12,7 +12,7 @@ v0.1 deliberately **does not hide posts**. It only highlights high-confidence Sp
 
 ## Expected behavior
 
-A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.6 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
+A detected sponsored post receives a red outline and an `fbok · <reason>` badge. A fixed `fbok 0.1.7 · scanned N · hits N` badge should also appear at the bottom-left when the content script is running. Current reasons include:
 
 - `svg-sprite-ref`
 - `accessibility-label`
@@ -60,3 +60,15 @@ Verify at least:
 - No repeated badges or console errors after long scrolling.
 
 When reporting a false positive or missed ad, capture the relevant post DOM with personal content removed/redacted and note the detector reason if one was shown.
+
+
+## v0.1.7 diagnostic interpretation
+
+The fixed badge now shows:
+
+`fbok 0.1.7 · scanned N · hits N · adlinks N · resolved N · unresolved N`
+
+- `adlinks 0`: the current Ads About signal is not visible to normal DOM queries; inspect the ad label wrapper again.
+- `adlinks > 0, resolved 0`: the signal is visible, but feed-post container resolution is wrong.
+- `resolved > 0, hits 0`: this is a detector state/marking bug.
+- `hits > 0`: the Ads About path is working.
